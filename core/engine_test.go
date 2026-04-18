@@ -1160,8 +1160,9 @@ func TestProcessInteractiveEvents_HiddenToolProgressKeepsPreviewOnFinalize(t *te
 	p := &mockKeepPreviewPlatform{}
 	p.n = "feishu"
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: false})
+	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: true})
 	sessionKey := "test:user1"
+	e.chatSettings.SetSession(sessionKey, SettingQuiet, true) // quiet mode via per-session override
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s1")
 	state := &interactiveState{
@@ -1197,6 +1198,7 @@ func TestProcessInteractiveEvents_HiddenToolProgressKeepsPreviewOnFinalize(t *te
 func TestProcessInteractiveEvents_ToolMessagesDisabledSuppressesToolProgressOnly(t *testing.T) {
 	p := &stubPlatformEngine{n: "telegram"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	// Independent config: thinking ON, tool OFF — no session override
 	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: false})
 	sessionKey := "telegram:user1"
 	session := e.sessions.GetOrCreateActive(sessionKey)
@@ -1217,19 +1219,54 @@ func TestProcessInteractiveEvents_ToolMessagesDisabledSuppressesToolProgressOnly
 	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil)
 
 	sent := p.getSent()
+	// Tool messages hidden, but thinking + final text should show
 	if len(sent) < 1 || len(sent) > 2 {
 		t.Fatalf("sent = %#v, want final response with optional standalone thinking message", sent)
 	}
 	for _, msg := range sent {
-		if strings.Contains(msg, "Bash") || strings.Contains(msg, "echo hi") || strings.Contains(msg, "hi") {
+		if strings.Contains(msg, "Bash") || strings.Contains(msg, "echo hi") {
 			t.Fatalf("tool progress should stay hidden, got %q", msg)
 		}
 	}
+	// Positive assertion: thinking message should be present
 	if len(sent) == 2 && !strings.Contains(sent[0], "planning") {
 		t.Fatalf("thinking message = %q, want planning", sent[0])
 	}
 	if sent[len(sent)-1] != "done" {
 		t.Fatalf("final message = %q, want done", sent[len(sent)-1])
+	}
+}
+
+func TestProcessInteractiveEvents_QuietOverrideSuppressesBothThinkingAndTool(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500, ToolMessages: true})
+	sessionKey := "telegram:user1"
+	e.chatSettings.SetSession(sessionKey, SettingQuiet, true) // quiet mode via per-session override
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s1")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-1",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	agentSession.events <- Event{Type: EventThinking, Content: "planning"}
+	agentSession.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "echo hi"}
+	agentSession.events <- Event{Type: EventToolResult, ToolName: "Bash", ToolResult: "hi"}
+	agentSession.events <- Event{Type: EventText, Content: "done"}
+	agentSession.events <- Event{Type: EventResult, Content: "done", Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil)
+
+	sent := p.getSent()
+	// Quiet mode suppresses both thinking and tool messages; only final text should be sent
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want only final response", sent)
+	}
+	if sent[0] != "done" {
+		t.Fatalf("final message = %q, want done", sent[0])
 	}
 }
 
@@ -4153,24 +4190,22 @@ func TestCmdQuiet_TogglesDisplay(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ToolMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500})
-	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	msg := &Message{SessionKey: "test:user1", ChatID: "chat1", ReplyCtx: "ctx"}
 
-	// First /quiet: both on → both off (quiet ON)
+	// First /quiet: not quiet → quiet ON (per-session)
 	e.cmdQuiet(p, msg, nil)
-	if e.display.ThinkingMessages || e.display.ToolMessages {
-		t.Fatalf("after first /quiet: ThinkingMessages=%v, ToolMessages=%v, want both false",
-			e.display.ThinkingMessages, e.display.ToolMessages)
+	if !e.isQuiet("chat1", "test:user1") {
+		t.Fatal("after first /quiet: expected isQuiet=true")
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Quiet mode ON") {
 		t.Fatalf("sent = %q, want quiet ON message", p.sent)
 	}
 
-	// Second /quiet: both off → both on (quiet OFF)
+	// Second /quiet: quiet → quiet OFF (per-session)
 	p.sent = nil
 	e.cmdQuiet(p, msg, nil)
-	if !e.display.ThinkingMessages || !e.display.ToolMessages {
-		t.Fatalf("after second /quiet: ThinkingMessages=%v, ToolMessages=%v, want both true",
-			e.display.ThinkingMessages, e.display.ToolMessages)
+	if e.isQuiet("chat1", "test:user1") {
+		t.Fatal("after second /quiet: expected isQuiet=false")
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Quiet mode OFF") {
 		t.Fatalf("sent = %q, want quiet OFF message", p.sent)
@@ -10621,5 +10656,221 @@ func TestCmdThread_PrivateChatRejected(t *testing.T) {
 	e.cmdThread(p, msg, []string{"on"})
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "group") {
 		t.Fatalf("expected group-only message, got %q", p.sent)
+	}
+}
+
+func TestIsQuiet_FallbackToConfigDefault(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	// Default: ThinkingMessages=true, ToolMessages=true → not quiet
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+	if e.isQuiet("chat1", "sess1") {
+		t.Fatal("expected not quiet when display shows messages")
+	}
+
+	// Config says quiet: both false
+	e.display.ThinkingMessages = false
+	e.display.ToolMessages = false
+	if !e.isQuiet("chat1", "sess1") {
+		t.Fatal("expected quiet when display hides messages")
+	}
+}
+
+func TestIsQuiet_OverrideBeatsDefault(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	// Session override: quiet
+	e.chatSettings.SetSession("sess1", SettingQuiet, true)
+	if !e.isQuiet("chat1", "sess1") {
+		t.Fatal("expected quiet from session override")
+	}
+
+	// Session override: not quiet (overrides even if config were quiet)
+	e.display.ThinkingMessages = false
+	e.display.ToolMessages = false
+	e.chatSettings.SetSession("sess2", SettingQuiet, false)
+	if e.isQuiet("chat1", "sess2") {
+		t.Fatal("expected not quiet from session override=false")
+	}
+}
+
+func TestIsQuiet_EmptyChatID(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	e.chatSettings.SetSession("sess1", SettingQuiet, true)
+	if !e.isQuiet("", "sess1") {
+		t.Fatal("expected quiet with empty chatID and session override")
+	}
+	if e.isQuiet("", "sess2") {
+		t.Fatal("expected not quiet with empty chatID and no override")
+	}
+}
+
+func TestIsThinkingHidden_IndependentFallback(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	// thinking=false, tool=true → thinking hidden, tool shown
+	e.display.ThinkingMessages = false
+	e.display.ToolMessages = true
+	if !e.isThinkingHidden("chat1", "sess1") {
+		t.Fatal("expected thinking hidden when ThinkingMessages=false")
+	}
+	if e.isToolHidden("chat1", "sess1") {
+		t.Fatal("expected tool shown when ToolMessages=true")
+	}
+
+	// thinking=true, tool=false → thinking shown, tool hidden
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = false
+	if e.isThinkingHidden("chat1", "sess1") {
+		t.Fatal("expected thinking shown when ThinkingMessages=true")
+	}
+	if !e.isToolHidden("chat1", "sess1") {
+		t.Fatal("expected tool hidden when ToolMessages=false")
+	}
+}
+
+func TestIsThinkingHidden_QuietOverrideWins(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	// Session quiet=true overrides config
+	e.chatSettings.SetSession("sess1", SettingQuiet, true)
+	if !e.isThinkingHidden("chat1", "sess1") {
+		t.Fatal("expected thinking hidden from quiet override")
+	}
+	if !e.isToolHidden("chat1", "sess1") {
+		t.Fatal("expected tool hidden from quiet override")
+	}
+
+	// Session quiet=false overrides config (even if config hides them)
+	e.display.ThinkingMessages = false
+	e.display.ToolMessages = false
+	e.chatSettings.SetSession("sess2", SettingQuiet, false)
+	if e.isThinkingHidden("chat1", "sess2") {
+		t.Fatal("expected thinking shown from quiet=false override")
+	}
+	if e.isToolHidden("chat1", "sess2") {
+		t.Fatal("expected tool shown from quiet=false override")
+	}
+}
+
+func TestCmdQuiet_TogglesPerSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	msg := &Message{
+		SessionKey: "feishu:oc_test:root:om_001",
+		ChatID:     "oc_test",
+		ReplyCtx:   "ctx",
+	}
+
+	// Toggle ON (was not quiet → now quiet)
+	e.cmdQuiet(p, msg, nil)
+	v := e.chatSettings.Get("oc_test", msg.SessionKey, SettingQuiet)
+	if v != true {
+		t.Fatalf("expected quiet=true after first toggle, got %v", v)
+	}
+
+	// Verify global display is NOT mutated
+	if !e.display.ThinkingMessages || !e.display.ToolMessages {
+		t.Fatal("cmdQuiet should not mutate e.display")
+	}
+
+	// Toggle OFF
+	p.sent = nil
+	e.cmdQuiet(p, msg, nil)
+	v = e.chatSettings.Get("oc_test", msg.SessionKey, SettingQuiet)
+	if v != false {
+		t.Fatalf("expected quiet=false after second toggle, got %v", v)
+	}
+}
+
+func TestCmdQuiet_SessionIsolation(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	msgA := &Message{SessionKey: "sessA", ChatID: "chat1", ReplyCtx: "ctx"}
+
+	// Session A: quiet ON
+	e.cmdQuiet(p, msgA, nil)
+
+	// Session A is quiet
+	if !e.isQuiet("chat1", "sessA") {
+		t.Fatal("sessA should be quiet")
+	}
+	// Session B is NOT quiet (no override, falls back to config default)
+	if e.isQuiet("chat1", "sessB") {
+		t.Fatal("sessB should not be quiet")
+	}
+}
+
+func TestCmdQuiet_DoesNotWriteConfigToml(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	called := false
+	e.displaySaveFunc = func(tm *bool, tmax *int, toolmax *int, tool *bool) error {
+		called = true
+		return nil
+	}
+
+	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
+	e.cmdQuiet(p, msg, nil)
+
+	if called {
+		t.Fatal("cmdQuiet should not call displaySaveFunc")
+	}
+}
+
+func TestCmdQuiet_IgnoresArgs(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
+	e.cmdQuiet(p, msg, []string{"blah"})
+
+	// Should still toggle, not crash
+	if !e.isQuiet("chat1", "sess1") {
+		t.Fatal("expected quiet after toggle with unknown args")
+	}
+	if len(p.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(p.sent))
+	}
+}
+
+func TestCmdQuiet_RapidToggle(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
+
+	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
+
+	e.cmdQuiet(p, msg, nil) // → quiet
+	e.cmdQuiet(p, msg, nil) // → verbose
+	e.cmdQuiet(p, msg, nil) // → quiet
+
+	if !e.isQuiet("chat1", "sess1") {
+		t.Fatal("expected quiet after 3 toggles")
 	}
 }

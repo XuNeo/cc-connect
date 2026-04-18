@@ -290,6 +290,7 @@ type interactiveState struct {
 	pending                *pendingPermission
 	pendingMessages        []queuedMessage // messages queued while session was busy
 	approveAll             bool            // when true, auto-approve all permission requests for this session
+	chatID                 string          // chat/group ID from Message.ChatID for per-session settings lookup
 	fromVoice              bool            // true if current turn originated from voice transcription
 	sideText               string
 	deleteMode             *deleteModeState
@@ -2180,6 +2181,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 
 	sendStart := time.Now()
 	state.mu.Lock()
+	state.chatID = msg.ChatID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
 	state.mu.Unlock()
@@ -2715,12 +2717,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		state.mu.Lock()
 		p := state.platform
+		chatID := state.chatID
 		state.mu.Unlock()
 
 		switch event.Type {
 		case EventThinking:
 			// In quiet mode, still split text segments so they don't merge.
-			if !e.display.ThinkingMessages && len(textParts) > segmentStart {
+			if e.isThinkingHidden(chatID, sessionKey) && len(textParts) > segmentStart {
 				if sp.canPreview() {
 					sp.freeze()
 					sp.detachPreview()
@@ -2735,7 +2738,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				segmentStart = len(textParts)
 			}
-			if e.display.ThinkingMessages && event.Content != "" {
+			if !e.isThinkingHidden(chatID, sessionKey) && event.Content != "" {
 				// Flush accumulated text segment before thinking display
 				previewActive := sp.canPreview()
 				if len(textParts) > segmentStart {
@@ -2763,7 +2766,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		case EventToolUse:
 			toolCount++
 			// When tool messages are hidden, split text segments.
-			if !e.display.ToolMessages && len(textParts) > segmentStart {
+			if e.isToolHidden(chatID, sessionKey) && len(textParts) > segmentStart {
 				if sp.canPreview() {
 					sp.freeze()
 					sp.detachPreview()
@@ -2778,7 +2781,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				segmentStart = len(textParts)
 			}
-			if e.display.ToolMessages {
+			if !e.isToolHidden(chatID, sessionKey) {
 				// Flush accumulated text segment before tool display
 				previewActive := sp.canPreview()
 				if len(textParts) > segmentStart {
@@ -2823,7 +2826,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 		case EventToolResult:
-			if e.display.ToolMessages {
+			if !e.isToolHidden(chatID, sessionKey) {
 				result := strings.TrimSpace(event.ToolResult)
 				if result == "" {
 					result = strings.TrimSpace(event.Content)
@@ -6320,25 +6323,49 @@ func (e *Engine) applyLiveModeChange(sessionKey, mode string) bool {
 }
 
 func (e *Engine) cmdQuiet(p Platform, msg *Message, args []string) {
-	// /quiet toggles both ThinkingMessages and ToolMessages.
-	// Quiet ON = both hidden; Quiet OFF = both shown.
-	isQuiet := e.display.ThinkingMessages || e.display.ToolMessages
-	e.display.ThinkingMessages = !isQuiet
-	e.display.ToolMessages = !isQuiet
-
-	if e.displaySaveFunc != nil {
-		tm := e.display.ThinkingMessages
-		tool := e.display.ToolMessages
-		if err := e.displaySaveFunc(&tm, nil, nil, &tool); err != nil {
-			slog.Error("failed to persist display config after /quiet", "error", err)
-		}
-	}
-
-	if isQuiet {
+	isQuiet := e.isQuiet(msg.ChatID, msg.SessionKey)
+	newQuiet := !isQuiet
+	e.chatSettings.SetSession(msg.SessionKey, SettingQuiet, newQuiet)
+	e.sessions.Save()
+	if newQuiet {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOn))
 	} else {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOff))
 	}
+}
+
+// isQuiet returns whether quiet mode is effective for the given chat/session.
+// Checks session override first, then falls back to config.toml display defaults.
+func (e *Engine) isQuiet(chatID, sessionKey string) bool {
+	v := e.chatSettings.Get(chatID, sessionKey, SettingQuiet)
+	if v != nil {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return !e.display.ThinkingMessages && !e.display.ToolMessages
+}
+
+// isThinkingHidden returns whether thinking messages should be suppressed.
+// Session quiet override takes precedence; otherwise falls back to config.toml thinking_messages.
+func (e *Engine) isThinkingHidden(chatID, sessionKey string) bool {
+	if v := e.chatSettings.Get(chatID, sessionKey, SettingQuiet); v != nil {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return !e.display.ThinkingMessages
+}
+
+// isToolHidden returns whether tool use/result messages should be suppressed.
+// Session quiet override takes precedence; otherwise falls back to config.toml tool_messages.
+func (e *Engine) isToolHidden(chatID, sessionKey string) bool {
+	if v := e.chatSettings.Get(chatID, sessionKey, SettingQuiet); v != nil {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return !e.display.ToolMessages
 }
 
 func (e *Engine) cmdTTS(p Platform, msg *Message, args []string) {
