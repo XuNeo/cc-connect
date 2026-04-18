@@ -4452,6 +4452,10 @@ func (e *Engine) cmdShell(p Platform, msg *Message, raw string) {
 
 		cmd := exec.CommandContext(ctx, "sh", "-c", shellCmd)
 		cmd.Dir = workDir
+		cmd.Env = MergeEnv(os.Environ(), []string{
+			"CC_PROJECT=" + e.name,
+			"CC_SESSION_KEY=" + msg.SessionKey,
+		})
 		output, err := cmd.CombinedOutput()
 
 		if ctx.Err() == context.DeadlineExceeded {
