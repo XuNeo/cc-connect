@@ -182,7 +182,7 @@ func TestSessionKeyForChannel_UsesThreadKeyWhenChannelIsThread(t *testing.T) {
 		},
 	}
 
-	if got := resolveSessionKeyForChannel("thread-7", "user-1", false, true, ops); got != "discord:thread-7" {
+	if got := resolveSessionKeyForChannel("thread-7", "user-1", false, true, nil, ops); got != "discord:thread-7" {
 		t.Fatalf("resolveSessionKeyForChannel() = %q, want discord:thread-7", got)
 	}
 }

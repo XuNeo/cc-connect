@@ -1115,3 +1115,47 @@ func TestResolveMentions_SpecialCharsEscaped(t *testing.T) {
 		t.Fatalf("expected HTML-escaped name, got %q", result)
 	}
 }
+
+type stubSettingsProvider struct {
+	overrides map[string]any
+}
+
+func (s *stubSettingsProvider) GetChatSetting(chatID, sessionKey, key string) any {
+	if key == "thread_isolation" {
+		if v, ok := s.overrides[chatID]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func TestMakeSessionKey_WithSettingsOverride(t *testing.T) {
+	p := &Platform{
+		platformName:    "feishu",
+		threadIsolation: true,
+		settings: &stubSettingsProvider{overrides: map[string]any{
+			"oc_nothread": false,
+		}},
+	}
+
+	chatType := "group"
+	rootID := "om_root1"
+	msgID := "om_msg1"
+	msg := &larkim.EventMessage{
+		ChatType:  &chatType,
+		RootId:    &rootID,
+		MessageId: &msgID,
+	}
+
+	// Chat with override=false: should NOT use thread key
+	key1 := p.makeSessionKey(msg, "oc_nothread", "ou_user1")
+	if strings.Contains(key1, "root:") {
+		t.Fatalf("expected non-thread key for overridden chat, got %s", key1)
+	}
+
+	// Chat without override: should use thread key (config default)
+	key2 := p.makeSessionKey(msg, "oc_normal", "ou_user1")
+	if !strings.Contains(key2, "root:") {
+		t.Fatalf("expected thread key for default chat, got %s", key2)
+	}
+}

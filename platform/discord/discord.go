@@ -64,6 +64,7 @@ type Platform struct {
 	seenMsgs                   sync.Map // message ID dedup: prevents duplicate MessageCreate events
 	seenInteractions           sync.Map // interaction ID dedup: prevents duplicate slash/button events
 	self                       core.Platform
+	settings                   core.SettingsProvider // per-chat settings (injected by engine)
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -131,6 +132,11 @@ func (p *Platform) selfPlatform() core.Platform {
 		return p.self
 	}
 	return p
+}
+
+// SetSettingsProvider injects the per-chat settings provider.
+func (p *Platform) SetSettingsProvider(sp core.SettingsProvider) {
+	p.settings = sp
 }
 
 func (p *Platform) dispatchMessage(msg *core.Message) {
@@ -295,8 +301,16 @@ func parseDiscordSessionKeyChannelID(sessionKey string) (string, error) {
 	return parts[1], nil
 }
 
-func resolveSessionKeyForChannel(channelID, userID string, shareSessionInChannel bool, threadIsolation bool, ops discordThreadOps) string {
-	if !threadIsolation {
+func resolveSessionKeyForChannel(channelID, userID string, shareSessionInChannel bool, threadIsolation bool, settings core.SettingsProvider, ops discordThreadOps) string {
+	effective := threadIsolation
+	if settings != nil {
+		if override := settings.GetChatSetting(channelID, "", core.SettingThreadIsolation); override != nil {
+			if b, ok := override.(bool); ok {
+				effective = b
+			}
+		}
+	}
+	if !effective {
 		return buildSessionKey(channelID, userID, shareSessionInChannel)
 	}
 	ch, err := ops.ResolveChannel(channelID)
@@ -539,7 +553,15 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 
 		sessionKey := p.makeSessionKey(m.ChannelID, m.Author.ID)
 		rctx := replyContext{channelID: m.ChannelID, messageID: m.ID}
-		if p.threadIsolation && m.GuildID != "" {
+		effectiveIsolation := p.threadIsolation
+		if p.settings != nil {
+			if override := p.settings.GetChatSetting(m.ChannelID, "", core.SettingThreadIsolation); override != nil {
+				if b, ok := override.(bool); ok {
+					effectiveIsolation = b
+				}
+			}
+		}
+		if effectiveIsolation && m.GuildID != "" {
 			threadSessionKey, threadCtx, err := resolveThreadReplyContext(m, p.botID, sessionThreadOps{session: p.session})
 			if err != nil {
 				slog.Warn("discord: thread isolation setup failed, falling back", "message", m.ID, "channel", m.ChannelID, "error", err)
@@ -596,8 +618,10 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 			SessionKey: sessionKey, Platform: "discord",
 			MessageID: m.ID,
 			UserID:    m.Author.ID, UserName: m.Author.Username,
-			ChatName: p.resolveChannelName(m.ChannelID),
-			Content:  m.Content, Images: images, Files: files, Audio: audio, ReplyCtx: rctx,
+			ChatName:  p.resolveChannelName(m.ChannelID),
+			ChatID:    m.ChannelID,
+			IsThread:  rctx.threadID != "",
+			Content:   m.Content, Images: images, Files: files, Audio: audio, ReplyCtx: rctx,
 		}
 		p.dispatchMessage(msg)
 	})
@@ -680,14 +704,15 @@ func (p *Platform) handleInteraction(s *discordgo.Session, i *discordgo.Interact
 
 	slog.Debug("discord: slash command", "user", userName, "command", cmdText, "channel", channelID)
 
-	sessionKey := resolveSessionKeyForChannel(channelID, userID, p.shareSessionInChannel, p.threadIsolation, sessionThreadOps{session: p.session})
+	sessionKey := resolveSessionKeyForChannel(channelID, userID, p.shareSessionInChannel, p.threadIsolation, p.settings, sessionThreadOps{session: p.session})
 
 	msg := &core.Message{
 		SessionKey: sessionKey, Platform: "discord",
 		MessageID: i.ID,
 		UserID:    userID, UserName: userName,
-		ChatName: p.resolveChannelName(channelID),
-		Content:  cmdText, ReplyCtx: rctx,
+		ChatName:  p.resolveChannelName(channelID),
+		ChatID:    channelID,
+		Content:   cmdText, ReplyCtx: rctx,
 	}
 	p.dispatchMessage(msg)
 }
@@ -748,7 +773,7 @@ func (p *Platform) handleComponentInteraction(s *discordgo.Session, i *discordgo
 	}
 
 	channelID := i.ChannelID
-	sessionKey := resolveSessionKeyForChannel(channelID, userID, p.shareSessionInChannel, p.threadIsolation, sessionThreadOps{session: p.session})
+	sessionKey := resolveSessionKeyForChannel(channelID, userID, p.shareSessionInChannel, p.threadIsolation, p.settings, sessionThreadOps{session: p.session})
 	rc := replyContext{channelID: channelID}
 	if i.Message != nil {
 		rc.messageID = i.Message.ID
@@ -760,6 +785,7 @@ func (p *Platform) handleComponentInteraction(s *discordgo.Session, i *discordgo
 		UserID:     userID,
 		UserName:   userName,
 		ChatName:   p.resolveChannelName(channelID),
+		ChatID:     channelID,
 		Content:    command,
 		ReplyCtx:   rc,
 	})

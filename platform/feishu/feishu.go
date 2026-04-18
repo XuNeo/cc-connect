@@ -151,6 +151,7 @@ type Platform struct {
 	// session key, enabling async card refreshes via the Patch API.
 	cardActionMsgMu  sync.Mutex
 	cardActionMsgIDs map[string]string // sessionKey → messageID
+	settings         core.SettingsProvider // per-chat settings (injected by engine)
 }
 
 type interactivePlatform struct {
@@ -161,6 +162,11 @@ type feishuRequestFunc func(client *lark.Client, options ...larkcore.RequestOpti
 
 func (p *Platform) SetCardNavigationHandler(h core.CardNavigationHandler) {
 	p.cardNavHandler = h
+}
+
+// SetSettingsProvider injects the per-chat settings provider.
+func (p *Platform) SetSettingsProvider(sp core.SettingsProvider) {
+	p.settings = sp
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -520,6 +526,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Platform:   p.platformName,
 			UserID:     userID,
 			UserName:   p.resolveUserName(userID),
+			ChatID:     chatID,
 			ChatName:   p.resolveChatName(chatID),
 			Content:    responseText,
 			ReplyCtx:   rctx,
@@ -551,6 +558,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Platform:   p.platformName,
 			UserID:     userID,
 			UserName:   p.resolveUserName(userID),
+			ChatID:     chatID,
 			ChatName:   p.resolveChatName(chatID),
 			Content:    actionVal,
 			ReplyCtx:   rctx,
@@ -586,6 +594,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Platform:   p.platformName,
 			UserID:     userID,
 			UserName:   p.resolveUserName(userID),
+			ChatID:     chatID,
 			ChatName:   p.resolveChatName(chatID),
 			Content:    cmdText,
 			ReplyCtx:   rctx,
@@ -767,7 +776,8 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID)
+	isThread := stringValue(msg.RootId) != ""
+	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, isThread)
 
 	return nil
 }
@@ -775,7 +785,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 // dispatchMessage handles the message content parsing, media download, and
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
-func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string) {
+func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, isThread bool) {
 	// Resolve user and chat names asynchronously so SDK dispatcher is not blocked.
 	userName := ""
 	if userID != "" {
@@ -812,6 +822,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID: chatID, IsThread: isThread,
 			Content: text, ExtraContent: quotedPrefix, ReplyCtx: rctx,
 		})
 
@@ -832,6 +843,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID: chatID, IsThread: isThread,
 			Images:   []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 			ReplyCtx: rctx,
 		})
@@ -855,6 +867,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID: chatID, IsThread: isThread,
 			Audio: &core.AudioAttachment{
 				MimeType: "audio/opus",
 				Data:     audioData,
@@ -874,6 +887,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID: chatID, IsThread: isThread,
 			Content: text, ExtraContent: quotedPrefix, Images: images,
 			ReplyCtx: rctx,
 		})
@@ -899,6 +913,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID: chatID, IsThread: isThread,
 			Files: []core.FileAttachment{{
 				MimeType: mimeType,
 				Data:     fileData,
@@ -917,6 +932,7 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatID:   chatID, IsThread: isThread,
 			Content:  text,
 			Images:   images,
 			Files:    files,
@@ -2329,7 +2345,15 @@ func stripMentions(text string, mentions []*larkim.MentionEvent, botOpenID strin
 // TODO: Session-key derivation and reply-thread behavior are split across multiple code paths here.
 // Should revisit thread/root handling without changing thread_isolation=false behavior.
 func (p *Platform) makeSessionKey(msg *larkim.EventMessage, chatID, userID string) string {
-	if p.threadIsolation && msg != nil && stringValue(msg.ChatType) == "group" {
+	effective := p.threadIsolation
+	if p.settings != nil {
+		if override := p.settings.GetChatSetting(chatID, "", core.SettingThreadIsolation); override != nil {
+			if b, ok := override.(bool); ok {
+				effective = b
+			}
+		}
+	}
+	if effective && msg != nil && stringValue(msg.ChatType) == "group" {
 		rootID := stringValue(msg.RootId)
 		if rootID == "" {
 			rootID = stringValue(msg.MessageId)

@@ -249,6 +249,8 @@ type Engine struct {
 	// /web command callbacks
 	webSetupFunc  func() (port int, token string, needRestart bool, err error)
 	webStatusFunc func() (url string)
+
+	chatSettings *ChatSettings
 }
 
 // workspaceInitFlow tracks a channel that is being onboarded to a workspace.
@@ -372,11 +374,13 @@ func (pp *pendingPermission) resolve() {
 
 func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath string, lang Language) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
+	chatSettings := NewChatSettings()
+	sessions := NewSessionManagerWithSettings(sessionStorePath, chatSettings)
 	e := &Engine{
 		name:                  name,
 		agent:                 ag,
 		platforms:             platforms,
-		sessions:              NewSessionManager(sessionStorePath),
+		sessions:              sessions,
 		ctx:                   ctx,
 		cancel:                cancel,
 		i18n:                  NewI18n(lang),
@@ -392,6 +396,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		references:            DefaultReferenceRenderCfg(),
 		eventIdleTimeout:      defaultEventIdleTimeout,
 		showContextIndicator:  true,
+		chatSettings:          chatSettings,
 	}
 
 	if ag != nil {
@@ -406,6 +411,11 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 	}
 
 	return e
+}
+
+// GetChatSetting implements SettingsProvider.
+func (e *Engine) GetChatSetting(chatID, sessionKey, key string) any {
+	return e.chatSettings.Get(chatID, sessionKey, key)
 }
 
 // SetMultiWorkspace enables multi-workspace mode for the engine.
@@ -1255,6 +1265,9 @@ func (e *Engine) Start() error {
 	readyCount := 0
 	pendingCount := 0
 	for _, p := range e.platforms {
+		if sp, ok := p.(interface{ SetSettingsProvider(SettingsProvider) }); ok {
+			sp.SetSettingsProvider(e)
+		}
 		_, isAsync := p.(AsyncRecoverablePlatform)
 		if async, ok := p.(AsyncRecoverablePlatform); ok {
 			async.SetLifecycleHandler(e)
@@ -3383,6 +3396,7 @@ var builtinCommands = []struct {
 	{[]string{"whoami", "myid"}, "whoami"},
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
+	{[]string{"thread"}, "thread"},
 }
 
 // isBtwCommand checks if a trimmed message starts with a /btw command.
@@ -3583,6 +3597,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWhoami(p, msg)
 	case "web":
 		e.cmdWeb(p, msg, args)
+	case "thread":
+		e.cmdThread(p, msg, args)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -11857,4 +11873,40 @@ func (e *Engine) cmdWebStatus(p Platform, msg *Message) {
 		return
 	}
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgWebStatus), url))
+}
+
+func (e *Engine) cmdThread(p Platform, msg *Message, args []string) {
+	if msg.ChatID == "" {
+		e.reply(p, msg.ReplyCtx, "Thread isolation is only available in group chats.")
+		return
+	}
+
+	if len(args) == 0 {
+		v := e.chatSettings.Get(msg.ChatID, "", SettingThreadIsolation)
+		if v == nil {
+			e.reply(p, msg.ReplyCtx, "Thread isolation: using config default")
+		} else if b, ok := v.(bool); ok && b {
+			e.reply(p, msg.ReplyCtx, "Thread isolation: ON (override)")
+		} else {
+			e.reply(p, msg.ReplyCtx, "Thread isolation: OFF (override)")
+		}
+		return
+	}
+
+	switch args[0] {
+	case "on":
+		e.chatSettings.SetChat(msg.ChatID, SettingThreadIsolation, true)
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, "Thread isolation ON for this chat.")
+	case "off":
+		e.chatSettings.SetChat(msg.ChatID, SettingThreadIsolation, false)
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, "Thread isolation OFF for this chat.")
+	case "reset":
+		e.chatSettings.DeleteChat(msg.ChatID, SettingThreadIsolation)
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, "Thread isolation reset to config default.")
+	default:
+		e.reply(p, msg.ReplyCtx, "Usage: /thread [on|off|reset]")
+	}
 }

@@ -478,3 +478,8 @@ type CommandRegistrar interface {
 type ChannelNameResolver interface {
 	ResolveChannelName(channelID string) (string, error)
 }
+
+// SettingsProvider allows platforms to query per-chat settings from the engine.
+type SettingsProvider interface {
+	GetChatSetting(chatID, sessionKey, key string) any
+}

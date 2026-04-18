@@ -10568,3 +10568,58 @@ func TestSessionName_ACPLikeFlow(t *testing.T) {
 			"acp-session-001", gotName, "ACP任务")
 	}
 }
+
+func TestCmdThread_TogglePerChat(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	msg := &Message{
+		SessionKey: "feishu:oc_test:ou_user1",
+		ChatID:     "oc_test",
+		IsThread:   false,
+		ReplyCtx:   "ctx",
+	}
+
+	// /thread — show status (no override, should show config default)
+	e.cmdThread(p, msg, nil)
+	if len(p.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(p.sent))
+	}
+
+	// /thread off
+	p.sent = nil
+	e.cmdThread(p, msg, []string{"off"})
+	v := e.chatSettings.Get("oc_test", "", SettingThreadIsolation)
+	if v != false {
+		t.Fatalf("expected false after /thread off, got %v", v)
+	}
+
+	// /thread on
+	p.sent = nil
+	e.cmdThread(p, msg, []string{"on"})
+	v = e.chatSettings.Get("oc_test", "", SettingThreadIsolation)
+	if v != true {
+		t.Fatalf("expected true after /thread on, got %v", v)
+	}
+
+	// /thread reset
+	p.sent = nil
+	e.cmdThread(p, msg, []string{"reset"})
+	v = e.chatSettings.Get("oc_test", "", SettingThreadIsolation)
+	if v != nil {
+		t.Fatalf("expected nil after /thread reset, got %v", v)
+	}
+}
+
+func TestCmdThread_PrivateChatRejected(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	msg := &Message{
+		SessionKey: "feishu:ou_user1",
+		ChatID:     "",
+		ReplyCtx:   "ctx",
+	}
+	e.cmdThread(p, msg, []string{"on"})
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "group") {
+		t.Fatalf("expected group-only message, got %q", p.sent)
+	}
+}

@@ -192,15 +192,17 @@ const snapshotVersion = 1
 
 // sessionSnapshot is the JSON-serializable state of the SessionManager.
 type sessionSnapshot struct {
-	Sessions       map[string]*Session  `json:"sessions"`
-	ActiveSession  map[string]string    `json:"active_session"`
-	UserSessions   map[string][]string  `json:"user_sessions"`
-	Counter        int64                `json:"counter"`
-	SessionNames   map[string]string    `json:"session_names,omitempty"`    // agent session ID → custom name
-	UserMeta       map[string]*UserMeta `json:"user_meta,omitempty"`        // sessionKey → display info
-	PastIDTracking bool                 `json:"past_id_tracking,omitempty"` // true once PastAgentSessionIDs is supported
-	LegacyData     bool                 `json:"legacy_data,omitempty"`      // true while pre-fix sessions exist
-	Version        int                  `json:"version,omitempty"`          // schema version for migration detection
+	Sessions        map[string]*Session       `json:"sessions"`
+	ActiveSession   map[string]string         `json:"active_session"`
+	UserSessions    map[string][]string       `json:"user_sessions"`
+	Counter         int64                     `json:"counter"`
+	SessionNames    map[string]string         `json:"session_names,omitempty"`    // agent session ID → custom name
+	UserMeta        map[string]*UserMeta      `json:"user_meta,omitempty"`        // sessionKey → display info
+	ChatSettings    map[string]map[string]any `json:"chat_settings,omitempty"`
+	SessionSettings map[string]map[string]any `json:"session_settings,omitempty"`
+	PastIDTracking  bool                      `json:"past_id_tracking,omitempty"` // true once PastAgentSessionIDs is supported
+	LegacyData      bool                      `json:"legacy_data,omitempty"`      // true while pre-fix sessions exist
+	Version         int                       `json:"version,omitempty"`          // schema version for migration detection
 }
 
 // SessionManager supports multiple named sessions per user with active-session tracking.
@@ -213,7 +215,8 @@ type SessionManager struct {
 	sessionNames  map[string]string    // agent session ID → custom name
 	userMeta      map[string]*UserMeta // sessionKey → display info
 	counter       int64
-	storePath     string // empty = no persistence
+	storePath    string        // empty = no persistence
+	chatSettings *ChatSettings // per-chat/per-session overrides (optional, set by engine)
 
 	// legacyData is true when sessions were loaded from a snapshot that
 	// predates PastAgentSessionIDs tracking. In this state, many sessions
@@ -222,7 +225,22 @@ type SessionManager struct {
 	legacyData bool
 }
 
+// SetChatSettings links a ChatSettings instance for persistence.
+func (sm *SessionManager) SetChatSettings(cs *ChatSettings) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.chatSettings = cs
+}
+
 func NewSessionManager(storePath string) *SessionManager {
+	return newSessionManagerInternal(storePath, nil)
+}
+
+func NewSessionManagerWithSettings(storePath string, cs *ChatSettings) *SessionManager {
+	return newSessionManagerInternal(storePath, cs)
+}
+
+func newSessionManagerInternal(storePath string, cs *ChatSettings) *SessionManager {
 	sm := &SessionManager{
 		sessions:      make(map[string]*Session),
 		activeSession: make(map[string]string),
@@ -230,6 +248,7 @@ func NewSessionManager(storePath string) *SessionManager {
 		sessionNames:  make(map[string]string),
 		userMeta:      make(map[string]*UserMeta),
 		storePath:     storePath,
+		chatSettings:  cs,
 	}
 	if storePath != "" {
 		sm.load()
@@ -590,16 +609,23 @@ func (sm *SessionManager) saveLocked() {
 		}
 	}
 
+	var chatSnap, sessSnap map[string]map[string]any
+	if sm.chatSettings != nil {
+		chatSnap, sessSnap = sm.chatSettings.Snapshot()
+	}
+
 	snap := sessionSnapshot{
-		Sessions:       snapSessions,
-		ActiveSession:  sm.activeSession,
-		UserSessions:   sm.userSessions,
-		Counter:        sm.counter,
-		SessionNames:   sm.sessionNames,
-		UserMeta:       sm.userMeta,
-		PastIDTracking: true,
-		LegacyData:     sm.legacyData,
-		Version:        snapshotVersion,
+		Sessions:        snapSessions,
+		ActiveSession:   sm.activeSession,
+		UserSessions:    sm.userSessions,
+		Counter:         sm.counter,
+		SessionNames:    sm.sessionNames,
+		UserMeta:        sm.userMeta,
+		ChatSettings:    chatSnap,
+		SessionSettings: sessSnap,
+		PastIDTracking:  true,
+		LegacyData:      sm.legacyData,
+		Version:         snapshotVersion,
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -667,6 +693,10 @@ func (sm *SessionManager) load() {
 	}
 	if sm.userMeta == nil {
 		sm.userMeta = make(map[string]*UserMeta)
+	}
+
+	if sm.chatSettings != nil && (snap.ChatSettings != nil || snap.SessionSettings != nil) {
+		sm.chatSettings.Load(snap.ChatSettings, snap.SessionSettings)
 	}
 
 	for _, s := range sm.sessions {
