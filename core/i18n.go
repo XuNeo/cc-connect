@@ -155,6 +155,8 @@ const (
 	MsgAtmeOff                   MsgKey = "atme_off"
 	MsgAtmeReset                 MsgKey = "atme_reset"
 	MsgAtmeStatus                MsgKey = "atme_status"
+	MsgScopeChat                 MsgKey = "scope_chat"
+	MsgScopeThread               MsgKey = "scope_thread"
 	MsgModeChanged               MsgKey = "mode_changed"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
@@ -821,6 +823,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "此%s的 @ 機器人 狀態: **%s**(來源: %s)",
 		LangJapanese:           "この%sの @ メンションゲート: **%s**(ソース: %s)",
 		LangSpanish:            "Puerta de @ mención en este %s: **%s** (fuente: %s)",
+	},
+	MsgScopeChat: {
+		LangEnglish:            "chat",
+		LangChinese:            "群聊",
+		LangTraditionalChinese: "群聊",
+		LangJapanese:           "チャット",
+		LangSpanish:            "chat",
+	},
+	MsgScopeThread: {
+		LangEnglish:            "thread",
+		LangChinese:            "话题",
+		LangTraditionalChinese: "話題",
+		LangJapanese:           "スレッド",
+		LangSpanish:            "hilo",
 	},
 	MsgModeChanged: {
 		LangEnglish:            "🔄 Permission mode switched to **%s**. New sessions will use this mode.",

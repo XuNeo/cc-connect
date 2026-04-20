@@ -3400,6 +3400,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"thread"}, "thread"},
+	{[]string{"atme"}, "atme"},
 }
 
 // isBtwCommand checks if a trimmed message starts with a /btw command.
@@ -3602,6 +3603,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWeb(p, msg, args)
 	case "thread":
 		e.cmdThread(p, msg, args)
+	case "atme":
+		e.cmdAtme(p, msg, args)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
@@ -11940,4 +11943,84 @@ func (e *Engine) cmdThread(p Platform, msg *Message, args []string) {
 	default:
 		e.reply(p, msg.ReplyCtx, "Usage: /thread [on|off|reset]")
 	}
+}
+
+// cmdAtme toggles the @-mention gate for the current chat or session.
+// Scope is auto-selected: threaded messages write to session-level, others write to chat-level.
+// /atme            — show current status
+// /atme on         — require @-mention in this scope
+// /atme off        — drop @-mention requirement in this scope
+// /atme reset      — clear override, fall back to next layer
+func (e *Engine) cmdAtme(p Platform, msg *Message, args []string) {
+	if msg.ChatID == "" {
+		e.reply(p, msg.ReplyCtx, "The /atme command is only available in group chats.")
+		return
+	}
+
+	scopeIsSession := msg.IsThread && msg.SessionKey != ""
+	scopeLabel := e.i18n.T(MsgScopeChat)
+	if scopeIsSession {
+		scopeLabel = e.i18n.T(MsgScopeThread)
+	}
+
+	if len(args) == 0 {
+		e.atmeShowStatus(p, msg, scopeLabel)
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "on":
+		if scopeIsSession {
+			e.chatSettings.SetSession(msg.SessionKey, SettingRequireMention, true)
+		} else {
+			e.chatSettings.SetChat(msg.ChatID, SettingRequireMention, true)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeOn), scopeLabel))
+	case "off":
+		if scopeIsSession {
+			e.chatSettings.SetSession(msg.SessionKey, SettingRequireMention, false)
+		} else {
+			e.chatSettings.SetChat(msg.ChatID, SettingRequireMention, false)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeOff), scopeLabel))
+	case "reset":
+		if scopeIsSession {
+			e.chatSettings.DeleteSession(msg.SessionKey, SettingRequireMention)
+		} else {
+			e.chatSettings.DeleteChat(msg.ChatID, SettingRequireMention)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeReset), scopeLabel))
+	default:
+		e.reply(p, msg.ReplyCtx, "Usage: /atme [on|off|reset]")
+	}
+}
+
+// atmeShowStatus reports the effective require_mention value and its source layer.
+func (e *Engine) atmeShowStatus(p Platform, msg *Message, scopeLabel string) {
+	// Session layer.
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingRequireMention); v != nil {
+		if b, ok := v.(bool); ok {
+			state := "OFF"
+			if b {
+				state = "ON"
+			}
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeStatus), scopeLabel, state, "session"))
+			return
+		}
+	}
+	// Chat layer.
+	if v := e.chatSettings.Get(msg.ChatID, "", SettingRequireMention); v != nil {
+		if b, ok := v.(bool); ok {
+			state := "OFF"
+			if b {
+				state = "ON"
+			}
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeStatus), scopeLabel, state, "chat"))
+			return
+		}
+	}
+	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAtmeStatus), scopeLabel, "default", "config"))
 }

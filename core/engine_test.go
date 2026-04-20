@@ -10874,3 +10874,88 @@ func TestCmdQuiet_RapidToggle(t *testing.T) {
 		t.Fatal("expected quiet after 3 toggles")
 	}
 }
+
+func TestIsRequireMention_FallbackToConfigDefault(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	// No override → returns nil (platform decides default).
+	if v := e.GetChatSetting("chat1", "sess1", SettingRequireMention); v != nil {
+		t.Fatalf("expected nil fallback, got %v", v)
+	}
+
+	// Chat override wins.
+	e.chatSettings.SetChat("chat1", SettingRequireMention, false)
+	if v, _ := e.GetChatSetting("chat1", "sess1", SettingRequireMention).(bool); v {
+		t.Fatal("expected chat override=false")
+	}
+
+	// Session override beats chat.
+	e.chatSettings.SetSession("sess1", SettingRequireMention, true)
+	if v, _ := e.GetChatSetting("chat1", "sess1", SettingRequireMention).(bool); !v {
+		t.Fatal("expected session override=true to beat chat override")
+	}
+}
+
+func TestCmdAtme_ThreadScopeWritesSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	msg := &Message{ChatID: "chat1", SessionKey: "sess1", IsThread: true}
+
+	e.cmdAtme(p, msg, []string{"off"})
+
+	if v := e.chatSettings.Get("", "sess1", SettingRequireMention); v != false {
+		t.Fatalf("expected session override=false, got %v", v)
+	}
+	if v := e.chatSettings.Get("chat1", "", SettingRequireMention); v != nil {
+		t.Fatalf("expected NO chat override, got %v", v)
+	}
+}
+
+func TestCmdAtme_ChatScopeWritesChat(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	msg := &Message{ChatID: "chat1", SessionKey: "sess1", IsThread: false}
+
+	e.cmdAtme(p, msg, []string{"on"})
+
+	if v := e.chatSettings.Get("chat1", "", SettingRequireMention); v != true {
+		t.Fatalf("expected chat override=true, got %v", v)
+	}
+	if v := e.chatSettings.Get("", "sess1", SettingRequireMention); v != nil {
+		t.Fatalf("expected NO session override, got %v", v)
+	}
+}
+
+func TestCmdAtme_Reset(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	// Chat scope: set then reset.
+	msg := &Message{ChatID: "chat1", SessionKey: "sess1", IsThread: false}
+	e.cmdAtme(p, msg, []string{"on"})
+	e.cmdAtme(p, msg, []string{"reset"})
+	if v := e.chatSettings.Get("chat1", "", SettingRequireMention); v != nil {
+		t.Fatalf("expected chat override cleared, got %v", v)
+	}
+
+	// Session scope: set then reset.
+	msg2 := &Message{ChatID: "chat1", SessionKey: "sess2", IsThread: true}
+	e.cmdAtme(p, msg2, []string{"off"})
+	e.cmdAtme(p, msg2, []string{"reset"})
+	if v := e.chatSettings.Get("", "sess2", SettingRequireMention); v != nil {
+		t.Fatalf("expected session override cleared, got %v", v)
+	}
+}
+
+func TestCmdAtme_EmptyChatID_RejectsInDM(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	msg := &Message{ChatID: "", SessionKey: "sess1", IsThread: false}
+
+	e.cmdAtme(p, msg, []string{"on"})
+
+	if v := e.chatSettings.Get("", "sess1", SettingRequireMention); v != nil {
+		t.Fatalf("expected no write in DM, got %v", v)
+	}
+}
