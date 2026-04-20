@@ -965,3 +965,86 @@ func newTelegramTestPlatform(t *testing.T, handler func(http.ResponseWriter, *ht
 		httpClient: server.Client(),
 	}
 }
+
+type stubSettingsProviderTelegram struct {
+	overrides map[string]any
+}
+
+func (s *stubSettingsProviderTelegram) GetChatSetting(chatID, sessionKey, key string) any {
+	for _, k := range []string{
+		key + "|" + chatID + "|" + sessionKey,
+		key + "|" + chatID + "|",
+		key + "||" + sessionKey,
+	} {
+		if v, ok := s.overrides[k]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func TestTelegramMentionGate_OverrideDropsRequirement(t *testing.T) {
+	p := &Platform{
+		groupReplyAll: false,
+		settings: &stubSettingsProviderTelegram{overrides: map[string]any{
+			"require_mention|chat-open|": false,
+		}},
+	}
+
+	if p.shouldDropGroupMessage("chat-open", "sess_any", false) {
+		t.Fatal("expected pass with override=false")
+	}
+	if !p.shouldDropGroupMessage("chat-closed", "sess_any", false) {
+		t.Fatal("expected drop without override")
+	}
+	if p.shouldDropGroupMessage("chat-closed", "sess_any", true) {
+		t.Fatal("expected pass when directed at bot")
+	}
+
+	// groupReplyAll=true → predicate short-circuits.
+	p2 := &Platform{groupReplyAll: true}
+	if p2.shouldDropGroupMessage("any", "any", false) {
+		t.Fatal("expected pass when groupReplyAll=true")
+	}
+}
+
+func TestTelegramDispatchMessage_SetsChatID(t *testing.T) {
+	captured := make(chan *core.Message, 1)
+	p := &Platform{
+		token:         "token",
+		httpClient:    &http.Client{},
+		groupReplyAll: true,
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		captured <- msg
+	}
+	p.bot = newStubTelegramBot()
+	p.selfUser = &models.User{ID: 1, Username: "testbot"}
+
+	tgMsg := &models.Message{
+		ID:              1,
+		MessageThreadID: 77,
+		Text:            "hello",
+		Date:            int(time.Now().Unix()),
+		From:            &models.User{ID: 9, Username: "alice"},
+		Chat: models.Chat{
+			ID:      12345,
+			Type:    models.ChatTypeSupergroup,
+			Title:   "Test Forum",
+			IsForum: true,
+		},
+	}
+	p.handleMessage(context.Background(), tgMsg)
+
+	select {
+	case m := <-captured:
+		if m.ChatID != "12345" {
+			t.Fatalf("ChatID=%q want %q", m.ChatID, "12345")
+		}
+		if !m.IsThread {
+			t.Fatal("IsThread=false; want true for forum topic")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dispatchMessage did not invoke handler")
+	}
+}

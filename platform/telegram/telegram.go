@@ -111,6 +111,7 @@ type Platform struct {
 	shareSessionInChannel bool
 	enableReactions       bool
 	httpClient            *http.Client
+	settings              core.SettingsProvider // per-chat settings (injected by engine)
 
 	mu                  sync.RWMutex
 	bot                 telegramBot
@@ -200,6 +201,11 @@ func (p *Platform) SetLifecycleHandler(h core.PlatformLifecycleHandler) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lifecycleHandler = h
+}
+
+// SetSettingsProvider injects the per-chat settings provider.
+func (p *Platform) SetSettingsProvider(sp core.SettingsProvider) {
+	p.settings = sp
 }
 
 func defaultNewBot(token string, onUpdate func(context.Context, *models.Update), httpClient *http.Client) (telegramBot, *models.User, func(context.Context), error) {
@@ -350,9 +356,13 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 		chatName = msg.Chat.Title
 	}
 
-	if isGroup && !p.groupReplyAll {
-		slog.Debug("telegram: checking group message", "text", msg.Text, "is_command", isCommand(msg))
-		if !p.isDirectedAtBot(msg) {
+	chatIDStr := strconv.FormatInt(msg.Chat.ID, 10)
+	isThread := msg.Chat.IsForum && msg.MessageThreadID != 0
+
+	if isGroup {
+		directed := p.isDirectedAtBot(msg)
+		if p.shouldDropGroupMessage(chatIDStr, sessionKey, directed) {
+			slog.Debug("telegram: ignoring group message without bot mention", "chat", chatIDStr)
 			return
 		}
 	}
@@ -377,6 +387,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			Content:    caption,
 			MessageID:  strconv.Itoa(msg.ID),
 			ChannelKey: channelKey,
+			ChatID:     chatIDStr,
+			IsThread:   isThread,
 			Images:     []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
 			ReplyCtx:   rctx,
 		}, msg)
@@ -395,6 +407,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
 			ChannelKey: channelKey,
+			ChatID:     chatIDStr,
+			IsThread:   isThread,
 			Audio: &core.AudioAttachment{
 				MimeType: msg.Voice.MimeType,
 				Data:     audioData,
@@ -425,6 +439,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
 			ChannelKey: channelKey,
+			ChatID:     chatIDStr,
+			IsThread:   isThread,
 			Audio: &core.AudioAttachment{
 				MimeType: msg.Audio.MimeType,
 				Data:     audioData,
@@ -450,6 +466,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			Content:    caption,
 			MessageID:  strconv.Itoa(msg.ID),
 			ChannelKey: channelKey,
+			ChatID:     chatIDStr,
+			IsThread:   isThread,
 			Files:      []core.FileAttachment{{MimeType: msg.Document.MimeType, Data: fileData, FileName: msg.Document.FileName}},
 			ReplyCtx:   rctx,
 		}, msg)
@@ -463,6 +481,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 			UserID: userID, UserName: userName, ChatName: chatName,
 			MessageID:  strconv.Itoa(msg.ID),
 			ChannelKey: channelKey,
+			ChatID:     chatIDStr,
+			IsThread:   isThread,
 			Location: &core.LocationAttachment{
 				Latitude:             msg.Location.Latitude,
 				Longitude:            msg.Location.Longitude,
@@ -487,6 +507,8 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 		Content:    text,
 		MessageID:  strconv.Itoa(msg.ID),
 		ChannelKey: channelKey,
+		ChatID:     chatIDStr,
+		IsThread:   isThread,
 		ReplyCtx:   rctx,
 	}, msg)
 }
@@ -854,6 +876,28 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		ChannelKey: channelKey,
 		ReplyCtx:   rctx,
 	})
+}
+
+// shouldDropGroupMessage decides whether a group message must be dropped because
+// the bot was not directly addressed. Consults per-chat/per-session override first,
+// then falls back to groupReplyAll.
+func (p *Platform) shouldDropGroupMessage(chatID, sessionKey string, directedAtBot bool) bool {
+	requireMention := !p.groupReplyAll
+	if p.settings != nil {
+		if v := p.settings.GetChatSetting(chatID, sessionKey, core.SettingRequireMention); v != nil {
+			if b, ok := v.(bool); ok {
+				requireMention = b
+			}
+		}
+	}
+	if !requireMention {
+		return false
+	}
+	if directedAtBot {
+		slog.Debug("telegram: responding to group message", "chat", chatID)
+		return false
+	}
+	return true
 }
 
 // isDirectedAtBot checks whether a group message is directed at this bot:
