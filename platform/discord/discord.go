@@ -538,8 +538,24 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 			p.cacheBotRoleIDForGuild(s, m.GuildID, nil)
 			botRoleID = p.botRoleIDForGuild(m.GuildID)
 		}
-		if m.GuildID != "" && !p.groupReplyAll {
-			if !isDiscordBotMention(m, p.botID, botRoleID, p.respondToAtEveryoneAndHere) {
+		effectiveIsolation := p.threadIsolation
+		if p.settings != nil {
+			if override := p.settings.GetChatSetting(m.ChannelID, "", core.SettingThreadIsolation); override != nil {
+				if b, ok := override.(bool); ok {
+					effectiveIsolation = b
+				}
+			}
+		}
+
+		if m.GuildID != "" {
+			botMentioned := isDiscordBotMention(m, p.botID, botRoleID, false /* ignore @everyone here */)
+			sessionKeyForGate := p.makeSessionKey(m.ChannelID, m.Author.ID)
+			if effectiveIsolation {
+				if channel, err := s.State.Channel(m.ChannelID); err == nil && isThreadChannelType(channel.Type) {
+					sessionKeyForGate = buildThreadSessionKey(m.ChannelID)
+				}
+			}
+			if p.shouldDropGuildMessage(m.ChannelID, sessionKeyForGate, botMentioned, m.MentionEveryone) {
 				slog.Debug("discord: ignoring guild message without bot mention", "channel", m.ChannelID)
 				return
 			}
@@ -553,14 +569,6 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 
 		sessionKey := p.makeSessionKey(m.ChannelID, m.Author.ID)
 		rctx := replyContext{channelID: m.ChannelID, messageID: m.ID}
-		effectiveIsolation := p.threadIsolation
-		if p.settings != nil {
-			if override := p.settings.GetChatSetting(m.ChannelID, "", core.SettingThreadIsolation); override != nil {
-				if b, ok := override.(bool); ok {
-					effectiveIsolation = b
-				}
-			}
-		}
 		if effectiveIsolation && m.GuildID != "" {
 			threadSessionKey, threadCtx, err := resolveThreadReplyContext(m, p.botID, sessionThreadOps{session: p.session})
 			if err != nil {
@@ -1208,6 +1216,31 @@ func stripEveryoneHere(text string) string {
 	text = strings.ReplaceAll(text, "@everyone", "")
 	text = strings.ReplaceAll(text, "@here", "")
 	return strings.TrimSpace(text)
+}
+
+// shouldDropGuildMessage decides whether a guild message must be dropped because
+// the bot was not @-mentioned. It consults per-chat/per-session overrides first,
+// then falls back to groupReplyAll.
+func (p *Platform) shouldDropGuildMessage(channelID, sessionKey string, botMentioned, everyoneMentioned bool) bool {
+	requireMention := !p.groupReplyAll
+	if p.settings != nil {
+		if v := p.settings.GetChatSetting(channelID, sessionKey, core.SettingRequireMention); v != nil {
+			if b, ok := v.(bool); ok {
+				requireMention = b
+			}
+		}
+	}
+	if !requireMention {
+		return false
+	}
+	if botMentioned {
+		return false
+	}
+	if p.respondToAtEveryoneAndHere && everyoneMentioned {
+		slog.Debug("discord: responding to @everyone/@here message", "channel", channelID)
+		return false
+	}
+	return true
 }
 
 // isDiscordBotMention checks if the message mentions the bot by user ID or managed role ID.

@@ -1205,3 +1205,74 @@ func TestReplyContextForDeferredInteractionFallback(t *testing.T) {
 		})
 	}
 }
+
+type stubSettingsProviderDiscord struct {
+	overrides map[string]any
+}
+
+func (s *stubSettingsProviderDiscord) GetChatSetting(chatID, sessionKey, key string) any {
+	k := key + "|" + chatID + "|" + sessionKey
+	if v, ok := s.overrides[k]; ok {
+		return v
+	}
+	k = key + "|" + chatID + "|"
+	if v, ok := s.overrides[k]; ok {
+		return v
+	}
+	k = key + "||" + sessionKey
+	if v, ok := s.overrides[k]; ok {
+		return v
+	}
+	return nil
+}
+
+func TestDiscordMentionGate_OverrideDropsRequirement(t *testing.T) {
+	p := &Platform{
+		groupReplyAll: false,
+		botID:         "bot123",
+		settings: &stubSettingsProviderDiscord{overrides: map[string]any{
+			"require_mention|channel-open|": false,
+		}},
+	}
+
+	if p.shouldDropGuildMessage("channel-open", "sess_any", false, false) {
+		t.Fatal("expected message to pass with override=false")
+	}
+	if !p.shouldDropGuildMessage("channel-closed", "sess_any", false, false) {
+		t.Fatal("expected drop without override")
+	}
+	if p.shouldDropGuildMessage("channel-closed", "sess_any", true, false) {
+		t.Fatal("expected pass when bot is mentioned")
+	}
+
+	// groupReplyAll=true → predicate short-circuits without consulting settings.
+	p2 := &Platform{groupReplyAll: true}
+	if p2.shouldDropGuildMessage("any-channel", "any-sess", false, false) {
+		t.Fatal("expected pass when groupReplyAll=true")
+	}
+
+	// respondToAtEveryoneAndHere=true + everyoneMentioned=true → pass (broadcast allowance).
+	p3 := &Platform{groupReplyAll: false, respondToAtEveryoneAndHere: true}
+	if p3.shouldDropGuildMessage("ch", "s", false, true) {
+		t.Fatal("expected pass with broadcast allowance")
+	}
+}
+
+func TestDiscordMentionGate_SessionOverrideOnThread(t *testing.T) {
+	p := &Platform{
+		groupReplyAll: false,
+		botID:         "bot123",
+		settings: &stubSettingsProviderDiscord{overrides: map[string]any{
+			"require_mention||discord:thread-456": false,
+		}},
+	}
+	// Gate is called with the thread-aware session key: "discord:thread-456".
+	// The session-scope override (keyed by "require_mention||discord:thread-456") must let it pass.
+	if p.shouldDropGuildMessage("thread-456", "discord:thread-456", false, false) {
+		t.Fatal("expected session-scope override to let the message pass")
+	}
+	// Without the thread key (old user-scoped key), the override is not found and the message is dropped.
+	if !p.shouldDropGuildMessage("thread-456", "discord:thread-456:user1", false, false) {
+		t.Fatal("expected drop when gate uses wrong (user-scoped) session key")
+	}
+}
