@@ -734,18 +734,16 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		"thread_isolation", p.threadIsolation,
 	)
 
-	if chatType == "group" && !p.groupReplyAll && p.botOpenID != "" {
-		if !isBotMentioned(msg.Mentions, p.botOpenID) {
-			// Feishu @all sends {"text":"@_all"} with 0 mentions.
-			if p.respondToAtEveryoneAndHere && msg.Content != nil && strings.Contains(*msg.Content, "@_all") {
-				slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
-			} else {
-				slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
-				return nil
-			}
-		}
+	// Compute sessionKey early so the @-mention gate can consult per-session overrides.
+	preMentionSessionKey := p.makeSessionKey(msg, chatID, userID)
+	content := ""
+	if msg.Content != nil {
+		content = *msg.Content
 	}
-
+	if p.shouldDropGroupMessage(chatType, chatID, preMentionSessionKey, msg.Mentions, content) {
+		slog.Debug(p.tag()+": ignoring group message without bot mention", "chat_id", chatID)
+		return nil
+	}
 	if !core.AllowList(p.allowFrom, userID) {
 		slog.Debug(p.tag()+": message from unauthorized user", "user", userID)
 		return nil
@@ -756,15 +754,10 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		return nil
 	}
 
-	// Capture content before going async — the SDK may reuse the event object.
-	content := ""
-	if msg.Content != nil {
-		content = *msg.Content
-	}
 	mentions := msg.Mentions
 	parentID := stringValue(msg.ParentId)
 
-	sessionKey := p.makeSessionKey(msg, chatID, userID)
+	sessionKey := preMentionSessionKey
 	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
 	slog.Debug(p.tag()+": routed inbound message",
 		"message_id", messageID,
@@ -2309,6 +2302,39 @@ func (p *Platform) fetchBotOpenID() (string, error) {
 		return "", fmt.Errorf("api code=%d", result.Code)
 	}
 	return result.Bot.OpenID, nil
+}
+
+// shouldDropGroupMessage decides whether a group message must be dropped because
+// the bot was not @-mentioned. It consults per-chat/per-session overrides first,
+// then falls back to the config-level group_reply_all flag.
+func (p *Platform) shouldDropGroupMessage(chatType, chatID, sessionKey string, mentions []*larkim.MentionEvent, content string) bool {
+	if chatType != "group" {
+		return false
+	}
+	if p.botOpenID == "" {
+		return false
+	}
+
+	requireMention := !p.groupReplyAll
+	if p.settings != nil {
+		if v := p.settings.GetChatSetting(chatID, sessionKey, core.SettingRequireMention); v != nil {
+			if b, ok := v.(bool); ok {
+				requireMention = b
+			}
+		}
+	}
+	if !requireMention {
+		return false
+	}
+
+	if isBotMentioned(mentions, p.botOpenID) {
+		return false
+	}
+	if p.respondToAtEveryoneAndHere && strings.Contains(content, "@_all") {
+		slog.Debug(p.tag()+": responding to @all message", "chat_id", chatID)
+		return false
+	}
+	return true
 }
 
 func isBotMentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {

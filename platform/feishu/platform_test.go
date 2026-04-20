@@ -1116,13 +1116,31 @@ func TestResolveMentions_SpecialCharsEscaped(t *testing.T) {
 	}
 }
 
+// stubSettingsProvider is a test-only SettingsProvider backed by a plain map.
+// Supported key formats:
+//   - legacy thread_isolation: key is just the chatID (used by existing thread_isolation tests)
+//   - generic: key is "settingKey|chatID|sessionKey" (or "settingKey|chatID|" / "settingKey||sessionKey" as fallbacks)
+//
+// Missing keys return nil silently. If a test expects an override to apply and
+// nothing happens, double-check the key format — a typo silently falls back to config defaults.
 type stubSettingsProvider struct {
-	overrides map[string]any
+	overrides map[string]any // keyed by "key|chatID|sessionKey" or chatID (thread_isolation legacy)
 }
 
 func (s *stubSettingsProvider) GetChatSetting(chatID, sessionKey, key string) any {
 	if key == "thread_isolation" {
 		if v, ok := s.overrides[chatID]; ok {
+			return v
+		}
+		return nil
+	}
+	// Generic key: look up "key|chatID|sessionKey", then "key|chatID|", then "key||sessionKey".
+	for _, k := range []string{
+		key + "|" + chatID + "|" + sessionKey,
+		key + "|" + chatID + "|",
+		key + "||" + sessionKey,
+	} {
+		if v, ok := s.overrides[k]; ok {
 			return v
 		}
 	}
@@ -1157,5 +1175,26 @@ func TestMakeSessionKey_WithSettingsOverride(t *testing.T) {
 	key2 := p.makeSessionKey(msg, "oc_normal", "ou_user1")
 	if !strings.Contains(key2, "root:") {
 		t.Fatalf("expected thread key for default chat, got %s", key2)
+	}
+}
+
+func TestFeishuMentionGate_OverrideDropsRequirement(t *testing.T) {
+	p := &Platform{
+		platformName:  "feishu",
+		groupReplyAll: false,
+		botOpenID:     "ou_bot",
+		settings: &stubSettingsProvider{overrides: map[string]any{
+			"require_mention|oc_open|": false,
+		}},
+	}
+
+	got := p.shouldDropGroupMessage("group", "oc_open", "sess_any", nil /* mentions */, "hello" /* content */)
+	if got {
+		t.Fatal("expected message to pass (override=false)")
+	}
+
+	got = p.shouldDropGroupMessage("group", "oc_closed", "sess_any", nil, "hello")
+	if !got {
+		t.Fatal("expected message to drop in chat without override")
 	}
 }
