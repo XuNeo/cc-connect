@@ -151,6 +151,10 @@ const (
 	MsgQuietOff                  MsgKey = "quiet_off"
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
+	MsgAtmeOn                    MsgKey = "atme_on"
+	MsgAtmeOff                   MsgKey = "atme_off"
+	MsgAtmeReset                 MsgKey = "atme_reset"
+	MsgAtmeStatus                MsgKey = "atme_status"
 	MsgModeChanged               MsgKey = "mode_changed"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
@@ -789,6 +793,34 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔔 全域安靜模式已關閉 — 所有會話將恢復推送思考和工具調用進度訊息。",
 		LangJapanese:           "🔔 グローバル静音モード OFF — 全セッションで思考とツール進捗を表示します。",
 		LangSpanish:            "🔔 Modo silencioso global desactivado — todas las sesiones mostrarán los mensajes de progreso.",
+	},
+	MsgAtmeOn: {
+		LangEnglish:            "🔔 @-mention required for this %s — the bot will only respond when mentioned.",
+		LangChinese:            "🔔 此%s需要 @ 机器人 — 仅在被 @ 时才会响应。",
+		LangTraditionalChinese: "🔔 此%s需要 @ 機器人 — 僅在被 @ 時才會回應。",
+		LangJapanese:           "🔔 この%sではボットへの @ メンションが必要です — メンションされた場合のみ応答します。",
+		LangSpanish:            "🔔 Se requiere @ mención en este %s — el bot solo responderá cuando sea mencionado.",
+	},
+	MsgAtmeOff: {
+		LangEnglish:            "📢 @-mention not required for this %s — the bot will respond to any message.",
+		LangChinese:            "📢 此%s无需 @ 机器人 — 任何消息都会响应。",
+		LangTraditionalChinese: "📢 此%s無需 @ 機器人 — 任何訊息都會回應。",
+		LangJapanese:           "📢 この%sでは @ メンション不要 — すべてのメッセージに応答します。",
+		LangSpanish:            "📢 No se requiere @ mención en este %s — el bot responderá a cualquier mensaje.",
+	},
+	MsgAtmeReset: {
+		LangEnglish:            "↩️ @-mention setting reset — this %s now follows the config default.",
+		LangChinese:            "↩️ @ 机器人 设置已重置 — 此%s现在使用配置默认值。",
+		LangTraditionalChinese: "↩️ @ 機器人 設定已重設 — 此%s現在使用配置預設值。",
+		LangJapanese:           "↩️ @ メンション設定をリセット — この%sは設定のデフォルトに従います。",
+		LangSpanish:            "↩️ Configuración de @ mención restablecida — este %s ahora sigue el valor predeterminado.",
+	},
+	MsgAtmeStatus: {
+		LangEnglish:            "@-mention gate for this %s: **%s** (source: %s)",
+		LangChinese:            "此%s的 @ 机器人 状态: **%s**(来源: %s)",
+		LangTraditionalChinese: "此%s的 @ 機器人 狀態: **%s**(來源: %s)",
+		LangJapanese:           "この%sの @ メンションゲート: **%s**(ソース: %s)",
+		LangSpanish:            "Puerta de @ mención en este %s: **%s** (fuente: %s)",
 	},
 	MsgModeChanged: {
 		LangEnglish:            "🔄 Permission mode switched to **%s**. New sessions will use this mode.",
