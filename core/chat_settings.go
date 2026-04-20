@@ -9,6 +9,7 @@ const (
 	SettingQuiet           = "quiet"
 	SettingTTSMode         = "tts_mode"
 	SettingLanguage        = "language"
+	SettingRequireMention  = "require_mention"
 )
 
 // ChatSettings provides per-chat and per-session setting overrides
