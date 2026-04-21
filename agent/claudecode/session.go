@@ -49,6 +49,13 @@ type claudeSession struct {
 	// Stop hook timeout. The wait ends as soon as the process exits,
 	// so typical shutdowns take seconds, not the full timeout.
 	gracefulStopTimeout time.Duration
+
+	// toolNames pairs a Claude Code `tool_use.id` with its tool name so
+	// that when the subsequent `tool_result` arrives (on the user role)
+	// we can emit EventToolResult with the correct ToolName. Entries are
+	// deleted immediately after the EventToolResult is emitted.
+	// Access is serialized by readLoop's single-goroutine dispatch.
+	toolNames map[string]string
 }
 
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cliArgsFlag string, model, effort, sessionID, mode string, allowedTools, disallowedTools []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int) (*claudeSession, error) {
@@ -196,6 +203,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		cancel:              cancel,
 		done:                make(chan struct{}),
 		gracefulStopTimeout: 120 * time.Second,
+		toolNames:           map[string]string{},
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
@@ -362,6 +370,9 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			if toolName == "AskUserQuestion" {
 				continue
 			}
+			if toolUseID, ok := item["id"].(string); ok && toolUseID != "" {
+				cs.toolNames[toolUseID] = toolName
+			}
 			inputSummary := summarizeInput(toolName, item["input"])
 			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
 			select {
@@ -406,12 +417,57 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 			continue
 		}
 		contentType, _ := item["type"].(string)
-		if contentType == "tool_result" {
-			isError, _ := item["is_error"].(bool)
-			if isError {
-				result, _ := item["content"].(string)
-				slog.Debug("claudeSession: tool error", "content", result)
+		if contentType != "tool_result" {
+			continue
+		}
+
+		toolUseID, _ := item["tool_use_id"].(string)
+		toolName := cs.toolNames[toolUseID]
+		if toolUseID != "" {
+			delete(cs.toolNames, toolUseID)
+		}
+
+		// tool_result.content may be a plain string OR an array of
+		// content blocks (Anthropic Messages API schema). Claude Code
+		// emits the array form when a tool returns multimodal output
+		// (e.g. Read on an image file). Concatenate text blocks so the
+		// card still shows something meaningful.
+		var result string
+		switch c := item["content"].(type) {
+		case string:
+			result = c
+		case []any:
+			var b strings.Builder
+			for _, blk := range c {
+				m, ok := blk.(map[string]any)
+				if !ok {
+					continue
+				}
+				if t, _ := m["type"].(string); t == "text" {
+					if s, _ := m["text"].(string); s != "" {
+						b.WriteString(s)
+					}
+				}
 			}
+			result = b.String()
+		}
+		isError, _ := item["is_error"].(bool)
+		success := !isError
+
+		if isError {
+			slog.Debug("claudeSession: tool error", "tool", toolName, "content", result)
+		}
+
+		evt := core.Event{
+			Type:        core.EventToolResult,
+			ToolName:    toolName,
+			ToolResult:  result,
+			ToolSuccess: &success,
+		}
+		select {
+		case cs.events <- evt:
+		case <-cs.ctx.Done():
+			return
 		}
 	}
 }

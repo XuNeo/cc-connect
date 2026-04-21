@@ -283,3 +283,238 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 }
+
+func TestHandleUser_EmitsToolResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events:    make(chan core.Event, 8),
+		ctx:       ctx,
+		toolNames: map[string]string{"toolu_123": "Bash"},
+	}
+	cs.alive.Store(true)
+
+	raw := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_123",
+					"content":     "hello world\n",
+					"is_error":    false,
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	select {
+	case ev := <-cs.events:
+		if ev.Type != core.EventToolResult {
+			t.Fatalf("Type = %v, want %v", ev.Type, core.EventToolResult)
+		}
+		if ev.ToolName != "Bash" {
+			t.Fatalf("ToolName = %q, want %q", ev.ToolName, "Bash")
+		}
+		if ev.ToolResult != "hello world\n" {
+			t.Fatalf("ToolResult = %q, want %q", ev.ToolResult, "hello world\n")
+		}
+		if ev.ToolSuccess == nil || !*ev.ToolSuccess {
+			t.Fatalf("ToolSuccess = %v, want &true", ev.ToolSuccess)
+		}
+	default:
+		t.Fatal("expected an EventToolResult on cs.events, got none")
+	}
+
+	if _, still := cs.toolNames["toolu_123"]; still {
+		t.Fatalf("toolNames should be drained after emit, but key still present")
+	}
+}
+
+func TestHandleUser_ToolResultWithError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events:    make(chan core.Event, 8),
+		ctx:       ctx,
+		toolNames: map[string]string{"toolu_err": "Read"},
+	}
+	cs.alive.Store(true)
+
+	raw := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_err",
+					"content":     "permission denied",
+					"is_error":    true,
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	select {
+	case ev := <-cs.events:
+		if ev.Type != core.EventToolResult {
+			t.Fatalf("Type = %v, want %v", ev.Type, core.EventToolResult)
+		}
+		if ev.ToolName != "Read" {
+			t.Fatalf("ToolName = %q, want %q", ev.ToolName, "Read")
+		}
+		if ev.ToolResult != "permission denied" {
+			t.Fatalf("ToolResult = %q, want %q", ev.ToolResult, "permission denied")
+		}
+		if ev.ToolSuccess == nil || *ev.ToolSuccess {
+			t.Fatalf("ToolSuccess = %v, want &false", ev.ToolSuccess)
+		}
+	default:
+		t.Fatal("expected EventToolResult, got none")
+	}
+}
+
+func TestHandleUser_ToolResultUnknownToolUseID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events:    make(chan core.Event, 8),
+		ctx:       ctx,
+		toolNames: map[string]string{},
+	}
+	cs.alive.Store(true)
+
+	raw := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_unknown",
+					"content":     "something",
+					"is_error":    false,
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	select {
+	case ev := <-cs.events:
+		if ev.Type != core.EventToolResult {
+			t.Fatalf("Type = %v, want %v", ev.Type, core.EventToolResult)
+		}
+		if ev.ToolName != "" {
+			t.Fatalf("ToolName = %q, want empty fallback", ev.ToolName)
+		}
+		if ev.ToolResult != "something" {
+			t.Fatalf("ToolResult = %q, want %q", ev.ToolResult, "something")
+		}
+	default:
+		t.Fatal("expected EventToolResult, got none")
+	}
+}
+
+func TestHandleUser_MultipleToolResultsDrainMap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events: make(chan core.Event, 8),
+		ctx:    ctx,
+		toolNames: map[string]string{
+			"toolu_a": "Bash",
+			"toolu_b": "Read",
+		},
+	}
+	cs.alive.Store(true)
+
+	raw := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_a",
+					"content":     "a-out",
+				},
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_b",
+					"content":     "b-out",
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	names := []string{}
+	for i := 0; i < 2; i++ {
+		select {
+		case ev := <-cs.events:
+			if ev.Type != core.EventToolResult {
+				t.Fatalf("ev[%d].Type = %v, want EventToolResult", i, ev.Type)
+			}
+			names = append(names, ev.ToolName)
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("only got %d events, expected 2", i)
+		}
+	}
+	if names[0] != "Bash" || names[1] != "Read" {
+		t.Fatalf("names = %v, want [Bash Read]", names)
+	}
+	if len(cs.toolNames) != 0 {
+		t.Fatalf("toolNames not drained: %v", cs.toolNames)
+	}
+}
+
+func TestHandleUser_ToolResultArrayContent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events:    make(chan core.Event, 8),
+		ctx:       ctx,
+		toolNames: map[string]string{"toolu_arr": "Read"},
+	}
+	cs.alive.Store(true)
+
+	raw := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_arr",
+					"content": []any{
+						map[string]any{"type": "text", "text": "line one\n"},
+						map[string]any{"type": "image", "source": map[string]any{"type": "base64"}},
+						map[string]any{"type": "text", "text": "line two"},
+					},
+					"is_error": false,
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	select {
+	case ev := <-cs.events:
+		if ev.Type != core.EventToolResult {
+			t.Fatalf("Type = %v, want %v", ev.Type, core.EventToolResult)
+		}
+		if ev.ToolName != "Read" {
+			t.Fatalf("ToolName = %q, want %q", ev.ToolName, "Read")
+		}
+		if ev.ToolResult != "line one\nline two" {
+			t.Fatalf("ToolResult = %q, want %q", ev.ToolResult, "line one\nline two")
+		}
+	default:
+		t.Fatal("expected EventToolResult, got none")
+	}
+}
