@@ -6325,16 +6325,83 @@ func (e *Engine) applyLiveModeChange(sessionKey, mode string) bool {
 	return switcher.SetLiveMode(mode)
 }
 
+// cmdQuiet toggles quiet mode for the current chat or session.
+// Scope is auto-selected: threaded messages write to session-level, others
+// write to chat-level. DMs (no ChatID) fall back to session-level.
+// /quiet            — show current status
+// /quiet on         — enable quiet in this scope
+// /quiet off        — disable quiet in this scope
+// /quiet reset      — clear override, fall back to next layer
 func (e *Engine) cmdQuiet(p Platform, msg *Message, args []string) {
-	isQuiet := e.isQuiet(msg.ChatID, msg.SessionKey)
-	newQuiet := !isQuiet
-	e.chatSettings.SetSession(msg.SessionKey, SettingQuiet, newQuiet)
-	e.sessions.Save()
-	if newQuiet {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOn))
-	} else {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOff))
+	scopeIsSession := (msg.IsThread && msg.SessionKey != "") || msg.ChatID == ""
+	scopeLabel := e.i18n.T(MsgScopeChat)
+	if scopeIsSession {
+		scopeLabel = e.i18n.T(MsgScopeThread)
 	}
+
+	if len(args) == 0 {
+		e.quietShowStatus(p, msg, scopeLabel)
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "on":
+		if scopeIsSession {
+			e.chatSettings.SetSession(msg.SessionKey, SettingQuiet, true)
+		} else {
+			e.chatSettings.SetChat(msg.ChatID, SettingQuiet, true)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOn))
+	case "off":
+		if scopeIsSession {
+			e.chatSettings.SetSession(msg.SessionKey, SettingQuiet, false)
+		} else {
+			e.chatSettings.SetChat(msg.ChatID, SettingQuiet, false)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuietOff))
+	case "reset":
+		if scopeIsSession {
+			e.chatSettings.DeleteSession(msg.SessionKey, SettingQuiet)
+		} else {
+			e.chatSettings.DeleteChat(msg.ChatID, SettingQuiet)
+		}
+		e.sessions.Save()
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQuietReset), scopeLabel))
+	default:
+		e.reply(p, msg.ReplyCtx, "Usage: /quiet [on|off|reset]")
+	}
+}
+
+// quietShowStatus reports the effective quiet value and its source layer,
+// mirroring atmeShowStatus.
+func (e *Engine) quietShowStatus(p Platform, msg *Message, scopeLabel string) {
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != nil {
+		if b, ok := v.(bool); ok {
+			state := "OFF"
+			if b {
+				state = "ON"
+			}
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQuietStatus), scopeLabel, state, "session"))
+			return
+		}
+	}
+	if v := e.chatSettings.Get(msg.ChatID, "", SettingQuiet); v != nil {
+		if b, ok := v.(bool); ok {
+			state := "OFF"
+			if b {
+				state = "ON"
+			}
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQuietStatus), scopeLabel, state, "chat"))
+			return
+		}
+	}
+	defaultState := "OFF"
+	if !e.display.ThinkingMessages && !e.display.ToolMessages {
+		defaultState = "ON"
+	}
+	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQuietStatus), scopeLabel, defaultState, "config"))
 }
 
 // isQuiet returns whether quiet mode is effective for the given chat/session.

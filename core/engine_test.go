@@ -4189,26 +4189,33 @@ func TestCmdStatus_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 func TestCmdQuiet_TogglesDisplay(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetDisplayConfig(DisplayCfg{ThinkingMessages: true, ToolMessages: true, ThinkingMaxLen: 300, ToolMaxLen: 500})
-	msg := &Message{SessionKey: "test:user1", ChatID: "chat1", ReplyCtx: "ctx"}
+	e.display.ThinkingMessages = true
+	e.display.ToolMessages = true
 
-	// First /quiet: not quiet → quiet ON (per-session)
-	e.cmdQuiet(p, msg, nil)
-	if !e.isQuiet("chat1", "test:user1") {
-		t.Fatal("after first /quiet: expected isQuiet=true")
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_toggle",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
+
+	// /quiet on
+	e.cmdQuiet(p, msg, []string{"on"})
+	if !e.isQuiet("chat1", "feishu:chat1:root:om_toggle") {
+		t.Fatal("after /quiet on: expected isQuiet=true")
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Quiet mode ON") {
-		t.Fatalf("sent = %q, want quiet ON message", p.sent)
+		t.Fatalf("expected 'Quiet mode ON' reply, got: %v", p.sent)
 	}
 
-	// Second /quiet: quiet → quiet OFF (per-session)
+	// /quiet off
 	p.sent = nil
-	e.cmdQuiet(p, msg, nil)
-	if e.isQuiet("chat1", "test:user1") {
-		t.Fatal("after second /quiet: expected isQuiet=false")
+	e.cmdQuiet(p, msg, []string{"off"})
+	if e.isQuiet("chat1", "feishu:chat1:root:om_toggle") {
+		t.Fatal("after /quiet off: expected isQuiet=false")
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Quiet mode OFF") {
-		t.Fatalf("sent = %q, want quiet OFF message", p.sent)
+		t.Fatalf("expected 'Quiet mode OFF' reply, got: %v", p.sent)
 	}
 }
 
@@ -10766,7 +10773,7 @@ func TestIsThinkingHidden_QuietOverrideWins(t *testing.T) {
 	}
 }
 
-func TestCmdQuiet_TogglesPerSession(t *testing.T) {
+func TestCmdQuiet_ThreadScopeTogglesSession(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.display.ThinkingMessages = true
@@ -10775,48 +10782,63 @@ func TestCmdQuiet_TogglesPerSession(t *testing.T) {
 	msg := &Message{
 		SessionKey: "feishu:oc_test:root:om_001",
 		ChatID:     "oc_test",
+		IsThread:   true,
 		ReplyCtx:   "ctx",
 	}
 
-	// Toggle ON (was not quiet → now quiet)
-	e.cmdQuiet(p, msg, nil)
-	v := e.chatSettings.Get("oc_test", msg.SessionKey, SettingQuiet)
-	if v != true {
-		t.Fatalf("expected quiet=true after first toggle, got %v", v)
+	// /quiet off from default (not-quiet) — must store explicit false, not toggle to true
+	e.cmdQuiet(p, msg, []string{"off"})
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != false {
+		t.Fatalf("expected session-layer quiet=false after /quiet off, got %v", v)
+	}
+	if v := e.chatSettings.Get("oc_test", "", SettingQuiet); v != nil {
+		t.Fatalf("expected NO chat-layer override for thread-scoped /quiet, got %v", v)
+	}
+
+	// /quiet on
+	e.cmdQuiet(p, msg, []string{"on"})
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != true {
+		t.Fatalf("expected session-layer quiet=true after /quiet on, got %v", v)
 	}
 
 	// Verify global display is NOT mutated
 	if !e.display.ThinkingMessages || !e.display.ToolMessages {
 		t.Fatal("cmdQuiet should not mutate e.display")
 	}
-
-	// Toggle OFF
-	p.sent = nil
-	e.cmdQuiet(p, msg, nil)
-	v = e.chatSettings.Get("oc_test", msg.SessionKey, SettingQuiet)
-	if v != false {
-		t.Fatalf("expected quiet=false after second toggle, got %v", v)
-	}
 }
 
-func TestCmdQuiet_SessionIsolation(t *testing.T) {
+func TestCmdQuiet_TopLevelScopeWritesChat(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.display.ThinkingMessages = true
 	e.display.ToolMessages = true
 
-	msgA := &Message{SessionKey: "sessA", ChatID: "chat1", ReplyCtx: "ctx"}
-
-	// Session A: quiet ON
-	e.cmdQuiet(p, msgA, nil)
-
-	// Session A is quiet
-	if !e.isQuiet("chat1", "sessA") {
-		t.Fatal("sessA should be quiet")
+	// First top-level /quiet in group "chat1", its own ephemeral sessionKey
+	msg1 := &Message{
+		SessionKey: "feishu:chat1:root:om_first",
+		ChatID:     "chat1",
+		IsThread:   false,
+		ReplyCtx:   "ctx",
 	}
-	// Session B is NOT quiet (no override, falls back to config default)
-	if e.isQuiet("chat1", "sessB") {
-		t.Fatal("sessB should not be quiet")
+	e.cmdQuiet(p, msg1, []string{"on"})
+
+	// Expect chat-layer write, no session-layer write.
+	if v := e.chatSettings.Get("chat1", "", SettingQuiet); v != true {
+		t.Fatalf("expected chat-layer quiet=true for top-level /quiet, got %v", v)
+	}
+	if v := e.chatSettings.Get("", "feishu:chat1:root:om_first", SettingQuiet); v != nil {
+		t.Fatalf("expected NO session-layer override for top-level /quiet, got %v", v)
+	}
+
+	// A SECOND top-level message in the same chat with a different sessionKey
+	// must see the /quiet effect — this is the bug we are fixing.
+	msg2 := &Message{
+		SessionKey: "feishu:chat1:root:om_second",
+		ChatID:     "chat1",
+		IsThread:   false,
+	}
+	if !e.isQuiet(msg2.ChatID, msg2.SessionKey) {
+		t.Fatal("second top-level msg in same chat should inherit chat-layer quiet=true")
 	}
 }
 
@@ -10832,46 +10854,67 @@ func TestCmdQuiet_DoesNotWriteConfigToml(t *testing.T) {
 		return nil
 	}
 
-	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
-	e.cmdQuiet(p, msg, nil)
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_cfg",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
+	e.cmdQuiet(p, msg, []string{"on"})
 
 	if called {
 		t.Fatal("cmdQuiet should not call displaySaveFunc")
 	}
 }
 
-func TestCmdQuiet_IgnoresArgs(t *testing.T) {
+func TestCmdQuiet_UnknownArgShowsUsage(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.display.ThinkingMessages = true
 	e.display.ToolMessages = true
 
-	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_bad",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
 	e.cmdQuiet(p, msg, []string{"blah"})
 
-	// Should still toggle, not crash
-	if !e.isQuiet("chat1", "sess1") {
-		t.Fatal("expected quiet after toggle with unknown args")
+	// State must NOT be mutated
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != nil {
+		t.Fatalf("unknown arg must not mutate session-layer, got %v", v)
+	}
+	if v := e.chatSettings.Get("chat1", "", SettingQuiet); v != nil {
+		t.Fatalf("unknown arg must not mutate chat-layer, got %v", v)
 	}
 	if len(p.sent) != 1 {
-		t.Fatalf("expected 1 reply, got %d", len(p.sent))
+		t.Fatalf("expected exactly 1 usage reply, got %d", len(p.sent))
+	}
+	if !strings.Contains(p.sent[0], "Usage:") {
+		t.Fatalf("expected Usage: reply, got: %q", p.sent[0])
 	}
 }
 
-func TestCmdQuiet_RapidToggle(t *testing.T) {
+func TestCmdQuiet_OnOffOnDeterministic(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.display.ThinkingMessages = true
 	e.display.ToolMessages = true
 
-	msg := &Message{SessionKey: "sess1", ChatID: "chat1", ReplyCtx: "ctx"}
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_rapid",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
 
-	e.cmdQuiet(p, msg, nil) // → quiet
-	e.cmdQuiet(p, msg, nil) // → verbose
-	e.cmdQuiet(p, msg, nil) // → quiet
+	e.cmdQuiet(p, msg, []string{"on"})
+	e.cmdQuiet(p, msg, []string{"off"})
+	e.cmdQuiet(p, msg, []string{"on"})
 
-	if !e.isQuiet("chat1", "sess1") {
-		t.Fatal("expected quiet after 3 toggles")
+	if !e.isQuiet("chat1", msg.SessionKey) {
+		t.Fatal("expected quiet after on/off/on")
 	}
 }
 
@@ -10957,5 +11000,102 @@ func TestCmdAtme_EmptyChatID_RejectsInDM(t *testing.T) {
 
 	if v := e.chatSettings.Get("", "sess1", SettingRequireMention); v != nil {
 		t.Fatalf("expected no write in DM, got %v", v)
+	}
+}
+
+func TestCmdQuiet_Reset_ThreadScope(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_t",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
+
+	e.cmdQuiet(p, msg, []string{"on"})
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != true {
+		t.Fatalf("precondition: session-layer quiet=true, got %v", v)
+	}
+
+	e.cmdQuiet(p, msg, []string{"reset"})
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != nil {
+		t.Fatalf("expected session-layer cleared after /quiet reset, got %v", v)
+	}
+}
+
+func TestCmdQuiet_Reset_ChatScope(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_top",
+		ChatID:     "chat1",
+		IsThread:   false,
+		ReplyCtx:   "ctx",
+	}
+
+	e.cmdQuiet(p, msg, []string{"on"})
+	if v := e.chatSettings.Get("chat1", "", SettingQuiet); v != true {
+		t.Fatalf("precondition: chat-layer quiet=true, got %v", v)
+	}
+
+	e.cmdQuiet(p, msg, []string{"reset"})
+	if v := e.chatSettings.Get("chat1", "", SettingQuiet); v != nil {
+		t.Fatalf("expected chat-layer cleared after /quiet reset, got %v", v)
+	}
+}
+
+func TestCmdQuiet_NoArgShowsStatus(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	msg := &Message{
+		SessionKey: "feishu:chat1:root:om_x",
+		ChatID:     "chat1",
+		IsThread:   true,
+		ReplyCtx:   "ctx",
+	}
+
+	// Default: no override anywhere. No-arg /quiet should NOT mutate state.
+	e.cmdQuiet(p, msg, nil)
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != nil {
+		t.Fatalf("/quiet with no args must not mutate session layer, got %v", v)
+	}
+	if v := e.chatSettings.Get("chat1", "", SettingQuiet); v != nil {
+		t.Fatalf("/quiet with no args must not mutate chat layer, got %v", v)
+	}
+	if len(p.sent) != 1 {
+		t.Fatalf("expected one status reply, got %d", len(p.sent))
+	}
+
+	// With session override set, /quiet should report it.
+	e.chatSettings.SetSession(msg.SessionKey, SettingQuiet, true)
+	p.sent = nil
+	e.cmdQuiet(p, msg, nil)
+	if len(p.sent) != 1 {
+		t.Fatalf("expected one status reply, got %d", len(p.sent))
+	}
+	if !strings.Contains(p.sent[0], "ON") {
+		t.Fatalf("expected status reply to contain ON, got %q", p.sent[0])
+	}
+}
+
+func TestCmdQuiet_DMFallbackToSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	msg := &Message{
+		SessionKey: "weixin:dm:u123",
+		ChatID:     "",
+		IsThread:   false,
+		ReplyCtx:   "ctx",
+	}
+
+	// /quiet off from default must explicitly store false, not toggle to true.
+	e.cmdQuiet(p, msg, []string{"off"})
+	if v := e.chatSettings.Get("", msg.SessionKey, SettingQuiet); v != false {
+		t.Fatalf("expected DM /quiet off to write session-layer quiet=false, got %v", v)
 	}
 }

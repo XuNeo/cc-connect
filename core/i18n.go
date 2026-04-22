@@ -151,6 +151,8 @@ const (
 	MsgQuietOff                  MsgKey = "quiet_off"
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
+	MsgQuietReset                MsgKey = "quiet_reset"
+	MsgQuietStatus               MsgKey = "quiet_status"
 	MsgAtmeOn                    MsgKey = "atme_on"
 	MsgAtmeOff                   MsgKey = "atme_off"
 	MsgAtmeReset                 MsgKey = "atme_reset"
@@ -795,6 +797,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔔 全域安靜模式已關閉 — 所有會話將恢復推送思考和工具調用進度訊息。",
 		LangJapanese:           "🔔 グローバル静音モード OFF — 全セッションで思考とツール進捗を表示します。",
 		LangSpanish:            "🔔 Modo silencioso global desactivado — todas las sesiones mostrarán los mensajes de progreso.",
+	},
+	MsgQuietReset: {
+		LangEnglish:            "↩️ Quiet setting reset — this %s now follows the config default.",
+		LangChinese:            "↩️ 安静模式已重置 — 此%s现在使用配置默认值。",
+		LangTraditionalChinese: "↩️ 安靜模式已重設 — 此%s現在使用配置預設值。",
+		LangJapanese:           "↩️ 静音設定をリセット — この%sは設定のデフォルトに従います。",
+		LangSpanish:            "↩️ Configuración de modo silencioso restablecida — este %s ahora sigue el valor predeterminado.",
+	},
+	MsgQuietStatus: {
+		LangEnglish:            "Quiet mode for this %s: **%s** (source: %s)",
+		LangChinese:            "此%s的安静模式状态: **%s**(来源: %s)",
+		LangTraditionalChinese: "此%s的安靜模式狀態: **%s**(來源: %s)",
+		LangJapanese:           "この%sの静音モード: **%s**(ソース: %s)",
+		LangSpanish:            "Modo silencioso en este %s: **%s** (fuente: %s)",
 	},
 	MsgAtmeOn: {
 		LangEnglish:            "🔔 @-mention required for this %s — the bot will only respond when mentioned.",
