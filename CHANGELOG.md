@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Feishu progress card redesigned**: each tool call and thinking block is now its own `collapsible_panel`. The single running tool and the latest thinking stay expanded; failed tools stay expanded; everything else defaults collapsed.
+
+### Added
+- `update_multi: true` on progress-card config (required by Feishu for shared updatable cards).
+- Per-message update queue serialising PATCH calls at 5 QPS per card (matches Feishu limit).
+- Automatic recovery from Feishu error codes 230020 (rate limit, exponential backoff), 230031 (card expired, send fresh card), 230099/200800 (card too complex, re-render at tighter budget).
+- Card pagination: content is split across multiple cards when the 150-element / 18 KB budget would be exceeded, each titled `... (i/N)`.
+
+### Fixed
+- Data loss on long tool outputs: the engine-layer truncation has been replaced with size-based sharding (18–28 KB split into multi-part panels) and an attachment fallback (>28 KB uploaded as a `.txt` file).
+
 ## v1.3.2 (2026-04-21)
 
 Hotfix release: session filtering is now configurable and defaults to showing all sessions.

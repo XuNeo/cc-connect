@@ -134,3 +134,6 @@ Desktop.ini
 secrets/
 credentials/
 .worktrees/
+
+# Local worktree plan artefacts (superpowers brainstorming output)
+docs/superpowers/plans/
