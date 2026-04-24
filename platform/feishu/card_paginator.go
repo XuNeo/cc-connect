@@ -9,10 +9,10 @@ import "encoding/json"
 // dropped, so data is never lost).
 func paginateElements(elements []map[string]any, maxElems, maxBytes int) [][]map[string]any {
 	if maxElems <= 0 {
-		maxElems = 150
+		maxElems = 180
 	}
 	if maxBytes <= 0 {
-		maxBytes = 18_000
+		maxBytes = 28_000
 	}
 	var pages [][]map[string]any
 	var cur []map[string]any

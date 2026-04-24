@@ -153,6 +153,7 @@ type Platform struct {
 	cardActionMsgMu  sync.Mutex
 	cardActionMsgIDs map[string]string // sessionKey → messageID
 	settings         core.SettingsProvider // per-chat settings (injected by engine)
+	updateQ          *updateQueue
 }
 
 type interactivePlatform struct {
@@ -266,6 +267,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		callbackPath:               callbackPath,
 		encryptKey:                 encryptKey,
 	}
+	base.updateQ = newUpdateQueue(5)
 	if !useInteractiveCard {
 		base.self = base
 		return base, nil
@@ -2675,6 +2677,10 @@ func isThreadSessionKey(sessionKey string) bool {
 type feishuPreviewHandle struct {
 	messageIDs []string
 	chatID     string
+	// rc carries thread/reply context from SendPreviewStart so that extra
+	// cards sent later (e.g. paginated progress cards, fresh-card recovery)
+	// land in the same thread, not the chat root.
+	rc replyContext
 }
 
 // buildCardJSON builds a Feishu interactive card JSON string with a markdown element.
@@ -3022,16 +3028,23 @@ func buildProgressCardElements(payload *core.ProgressCardPayload) (elements []ma
 	return elements, title, template, footer
 }
 
-// buildProgressCardJSONs renders the payload as one or more card JSON
-// strings, splitting the element list across cards when the 150 element /
-// 18 KB budget would be exceeded. Each card shares the same header
-// template and gets a (N/M) suffix.
+// buildProgressCardJSONs renders the payload with the default paginator
+// budget (180 elements / 28 KB per card) — Feishu's hard limits are
+// 200 / 30 KB, so this leaves a small headroom before hitting 230099.
 func buildProgressCardJSONs(payload *core.ProgressCardPayload) []string {
+	return buildProgressCardJSONsWithBudget(payload, 180, 28_000)
+}
+
+// buildProgressCardJSONsWithBudget renders the payload as one or more card JSON
+// strings, splitting the element list across cards when the maxElems element /
+// maxBytes budget would be exceeded. Each card shares the same header
+// template and gets a (N/M) suffix.
+func buildProgressCardJSONsWithBudget(payload *core.ProgressCardPayload, maxElems, maxBytes int) []string {
 	elements, title, template, footer := buildProgressCardElements(payload)
 	if len(elements) == 0 {
 		return []string{buildCardJSON(" ")}
 	}
-	pages := paginateElements(elements, 150, 18_000)
+	pages := paginateElements(elements, maxElems, maxBytes)
 	if len(pages) == 0 {
 		return []string{buildCardJSON(" ")}
 	}
@@ -3155,7 +3168,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		return nil, fmt.Errorf("%s: send preview: no message ID returned", p.tag())
 	}
 
-	return &feishuPreviewHandle{messageIDs: []string{msgID}, chatID: chatID}, nil
+	return &feishuPreviewHandle{messageIDs: []string{msgID}, chatID: chatID, rc: rc}, nil
 }
 
 // planCardUpdates decides how to reconcile existing message IDs against a
@@ -3206,15 +3219,25 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 
 	patchCount, sendCount, toDelete := planCardUpdates(h.messageIDs, len(cards))
 
+	if p.updateQ == nil {
+		p.updateQ = newUpdateQueue(5)
+	}
 	for i := 0; i < patchCount; i++ {
-		if err := p.patchSingleCard(ctx, h.messageIDs[i], cards[i]); err != nil {
-			return err
+		mid := h.messageIDs[i]
+		card := cards[i]
+		submit := func(c context.Context) error { return p.patchSingleCard(c, mid, card) }
+		err := p.updateQ.submit(ctx, mid, submit)
+		if err != nil {
+			err = p.recoverPatchError(ctx, err, h, i, mid, card, progressPayload)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	newIDs := append([]string{}, h.messageIDs[:patchCount]...)
 	if sendCount > 0 && h.chatID != "" {
 		for i := 0; i < sendCount; i++ {
-			id, err := p.sendCardToChat(ctx, h.chatID, cards[patchCount+i])
+			id, err := p.sendCardToChat(ctx, h.rc, cards[patchCount+i])
 			if err != nil {
 				return err
 			}
@@ -3234,6 +3257,63 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	return nil
 }
 
+// recoverPatchError picks the right recovery strategy for a failed card
+// PATCH based on classifyFeishuError. It may mutate h.messageIDs (when a
+// fresh card is posted). Returns nil on successful recovery, or the
+// underlying error if no recovery path applies.
+func (p *Platform) recoverPatchError(ctx context.Context, err error, h *feishuPreviewHandle, idx int, messageID, cardJSON string, progressPayload *core.ProgressCardPayload) error {
+	switch classifyFeishuError(err) {
+	case errKindRateLimited:
+		retryErr := retryPatchWith(ctx, func(c context.Context) error {
+			return p.updateQ.submit(c, messageID, func(cc context.Context) error {
+				return p.patchSingleCard(cc, messageID, cardJSON)
+			})
+		}, []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond})
+		if retryErr != nil {
+			return retryErr
+		}
+		return nil
+	case errKindExpired:
+		if progressPayload == nil || h.chatID == "" {
+			return err
+		}
+		withNotice := prefixProgressPayloadWithNotice(*progressPayload, freshCardNotice(progressPayload))
+		tight := buildProgressCardJSONs(&withNotice)
+		if len(tight) == 0 {
+			return err
+		}
+		newID, sendErr := p.sendCardToChat(ctx, h.rc, tight[0])
+		if sendErr != nil {
+			return sendErr
+		}
+		h.messageIDs[idx] = newID
+		return nil
+	case errKindTooComplex:
+		if progressPayload == nil {
+			return err
+		}
+		tight := buildProgressCardJSONsWithBudget(progressPayload, 80, 14_000)
+		if idx >= len(tight) {
+			return err
+		}
+		return p.updateQ.submit(ctx, messageID, func(c context.Context) error {
+			return p.patchSingleCard(c, messageID, tight[idx])
+		})
+	case errKindChatUnavailable:
+		return err
+	default:
+		return err
+	}
+}
+
+// prefixProgressPayloadWithNotice returns a copy of payload whose Items list
+// begins with an Info-kind entry carrying the given notice text.
+func prefixProgressPayloadWithNotice(payload core.ProgressCardPayload, notice string) core.ProgressCardPayload {
+	cp := payload
+	cp.Items = append([]core.ProgressCardEntry{{Kind: core.ProgressEntryInfo, Text: notice}}, payload.Items...)
+	return cp
+}
+
 func (p *Platform) patchSingleCard(ctx context.Context, messageID, cardJSON string) error {
 	req := larkim.NewPatchMessageReqBuilder().
 		MessageId(messageID).
@@ -3246,14 +3326,50 @@ func (p *Platform) patchSingleCard(ctx context.Context, messageID, cardJSON stri
 				return fmt.Errorf("%s: patch message: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: patch message code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return fmt.Errorf("%s: patch message: %w", p.tag(), &feishuAPIError{Code: resp.Code, Msg: resp.Msg})
 			}
 			return nil
 		})
 	})
 }
 
-func (p *Platform) sendCardToChat(ctx context.Context, chatID, cardJSON string) (string, error) {
+// sendCardToChat posts a new interactive card. When rc carries a thread/reply
+// trigger message ID the card is sent via Im.Message.Reply so it lands in the
+// same thread; otherwise it falls back to Im.Message.Create against the chat
+// root. This keeps paginated progress cards and fresh-card recovery inside
+// the user's thread.
+func (p *Platform) sendCardToChat(ctx context.Context, rc replyContext, cardJSON string) (string, error) {
+	if p.shouldUseThreadOrReplyAPI(rc) {
+		req := larkim.NewReplyMessageReqBuilder().
+			MessageId(rc.messageID).
+			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, cardJSON)).
+			Build()
+		var resp *larkim.ReplyMessageResp
+		if err := p.withTransientRetry(ctx, "send extra card", func() error {
+			return p.withFreshTenantAccessTokenRetry(ctx, "send extra card", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+				var err error
+				resp, err = client.Im.Message.Reply(ctx, req, options...)
+				if err != nil {
+					return fmt.Errorf("%s: send extra card (reply): %w", p.tag(), err)
+				}
+				if !resp.Success() {
+					return fmt.Errorf("%s: send extra card (reply): %w", p.tag(), &feishuAPIError{Code: resp.Code, Msg: resp.Msg})
+				}
+				return nil
+			})
+		}); err != nil {
+			return "", err
+		}
+		if resp.Data == nil || resp.Data.MessageId == nil {
+			return "", fmt.Errorf("%s: send extra card (reply): no message ID returned", p.tag())
+		}
+		return *resp.Data.MessageId, nil
+	}
+
+	chatID := rc.chatID
+	if chatID == "" {
+		return "", fmt.Errorf("%s: send extra card: chatID is empty", p.tag())
+	}
 	req := larkim.NewCreateMessageReqBuilder().
 		ReceiveIdType(larkim.ReceiveIdTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
@@ -3271,7 +3387,7 @@ func (p *Platform) sendCardToChat(ctx context.Context, chatID, cardJSON string) 
 				return fmt.Errorf("%s: send extra card: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: send extra card code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return fmt.Errorf("%s: send extra card: %w", p.tag(), &feishuAPIError{Code: resp.Code, Msg: resp.Msg})
 			}
 			return nil
 		})
@@ -3293,7 +3409,7 @@ func (p *Platform) deleteSingleCard(ctx context.Context, messageID string) error
 				return fmt.Errorf("%s: delete stale card: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: delete stale card code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return fmt.Errorf("%s: delete stale card: %w", p.tag(), &feishuAPIError{Code: resp.Code, Msg: resp.Msg})
 			}
 			return nil
 		})
@@ -3360,6 +3476,9 @@ func (p *Platform) Stop() error {
 		if err := p.server.Shutdown(ctx); err != nil {
 			slog.Error(p.tag()+": webhook server shutdown error", "error", err)
 		}
+	}
+	if p.updateQ != nil {
+		p.updateQ.stop()
 	}
 	return nil
 }
@@ -3623,4 +3742,33 @@ func renderInfoElement(item core.ProgressCardEntry, lang string) map[string]any 
 		"tag":     "markdown",
 		"content": preprocessFeishuMarkdown(sanitizeMarkdownURLs(item.Text)),
 	}
+}
+
+// retryPatchWith executes doPatch and, if it returns a rate-limited error,
+// retries after the given backoff durations. Any non-rate-limited error is
+// returned immediately without retry.
+func retryPatchWith(ctx context.Context, doPatch func(context.Context) error, backoffs []time.Duration) error {
+	err := doPatch(ctx)
+	for _, wait := range backoffs {
+		if err == nil || classifyFeishuError(err) != errKindRateLimited {
+			return err
+		}
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		err = doPatch(ctx)
+	}
+	return err
+}
+
+// freshCardNotice returns a short bilingual notice shown at the top of a new
+// progress card when Feishu refused to update the original one (typically
+// because it was past its 14-day update window).
+func freshCardNotice(payload *core.ProgressCardPayload) string {
+	if payload != nil && isZhLikeProgressLang(payload.Lang) {
+		return "会话超过 14 天，卡片已续期（新卡）"
+	}
+	return "session older than 14 days, card renewed (new card continued)"
 }
