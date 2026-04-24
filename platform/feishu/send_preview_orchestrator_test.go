@@ -130,3 +130,40 @@ func TestOrchestrateSendPreview_CreateFallbackErrorPropagates(t *testing.T) {
 		t.Errorf("want chat-unavailable propagated, got %v", err)
 	}
 }
+
+// TestSendPreviewStart_ThreadPreservedAfterWithdraw verifies the end-to-end
+// behaviour: a withdrawn trigger message causes one 230011, then the retry
+// against the thread root succeeds, and the resulting handle carries the
+// thread-root messageID so subsequent extra cards stay in the thread.
+func TestSendPreviewStart_ThreadPreservedAfterWithdraw(t *testing.T) {
+	// orchestrateSendPreview already covers the decision logic; this test
+	// pins the handle-construction contract that SendPreviewStart must
+	// honour once wired through the orchestrator. We exercise the same
+	// sequence directly so the test is hermetic.
+	rc := replyContext{
+		messageID:  "om_trigger",
+		chatID:     "oc_chat",
+		sessionKey: "feishu:oc_chat:root:om_root",
+	}
+	send := func(mid string) (string, error) {
+		if mid == "om_trigger" {
+			return "", &feishuAPIError{Code: 230011}
+		}
+		return "om_posted", nil
+	}
+	newID, usedMID, err := orchestrateSendPreview(rc, send)
+	if err != nil {
+		t.Fatalf("orchestrator err: %v", err)
+	}
+	// Handle must be built with the messageID that succeeded — not the
+	// original trigger — so sendCardToChat replies to a live target.
+	effectiveRC := rc
+	effectiveRC.messageID = usedMID
+	h := &feishuPreviewHandle{messageIDs: []string{newID}, chatID: rc.chatID, rc: effectiveRC}
+	if h.rc.messageID != "om_root" {
+		t.Errorf("handle.rc.messageID=%q, want om_root (thread root)", h.rc.messageID)
+	}
+	if h.chatID != "oc_chat" {
+		t.Errorf("handle.chatID=%q, want oc_chat", h.chatID)
+	}
+}

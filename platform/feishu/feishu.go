@@ -3136,8 +3136,9 @@ func buildPreviewCardJSON(content string) string {
 }
 
 // SendPreviewStart sends a new card message and returns a handle for subsequent edits.
-// Using card (interactive) type for both preview and final message so updates
-// are in-place without needing to delete and resend.
+// When the trigger reply target is withdrawn it walks previewRetryMessageIDs(rc)
+// — thread root next, then plain Create — keeping the card in the thread if
+// at all possible.
 func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content string) (any, error) {
 	if !p.useInteractiveCard {
 		return nil, core.ErrNotSupported
@@ -3155,32 +3156,34 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 
 	cardJSON := buildPreviewCardJSON(content)
 
-	var msgID string
-	if p.shouldUseThreadOrReplyAPI(rc) {
-		req := larkim.NewReplyMessageReqBuilder().
-			MessageId(rc.messageID).
-			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, cardJSON)).
-			Build()
-		var resp *larkim.ReplyMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
-			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-				var err error
-				resp, err = client.Im.Message.Reply(ctx, req, options...)
-				if err != nil {
-					return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
-				}
-				if !resp.Success() {
-					return wrapAPIError(p.tag(), "send preview (reply)", resp.Code, resp.Msg)
-				}
-				return nil
-			})
-		}); err != nil {
-			return nil, err
+	send := func(messageID string) (string, error) {
+		if messageID != "" {
+			req := larkim.NewReplyMessageReqBuilder().
+				MessageId(messageID).
+				Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, cardJSON)).
+				Build()
+			var resp *larkim.ReplyMessageResp
+			if err := p.withTransientRetry(ctx, "send preview", func() error {
+				return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+					var err error
+					resp, err = client.Im.Message.Reply(ctx, req, options...)
+					if err != nil {
+						return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
+					}
+					if !resp.Success() {
+						return wrapAPIError(p.tag(), "send preview (reply)", resp.Code, resp.Msg)
+					}
+					return nil
+				})
+			}); err != nil {
+				return "", err
+			}
+			if resp.Data == nil || resp.Data.MessageId == nil {
+				return "", fmt.Errorf("%s: send preview (reply): no message ID returned", p.tag())
+			}
+			return *resp.Data.MessageId, nil
 		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
-		}
-	} else {
+
 		req := larkim.NewCreateMessageReqBuilder().
 			ReceiveIdType(larkim.ReceiveIdTypeChatId).
 			Body(larkim.NewCreateMessageReqBodyBuilder().
@@ -3203,18 +3206,22 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 				return nil
 			})
 		}); err != nil {
-			return nil, err
+			return "", err
 		}
-		if resp.Data != nil && resp.Data.MessageId != nil {
-			msgID = *resp.Data.MessageId
+		if resp.Data == nil || resp.Data.MessageId == nil {
+			return "", fmt.Errorf("%s: send preview: no message ID returned", p.tag())
 		}
+		return *resp.Data.MessageId, nil
 	}
 
-	if msgID == "" {
-		return nil, fmt.Errorf("%s: send preview: no message ID returned", p.tag())
+	newID, usedMID, err := orchestrateSendPreview(rc, send)
+	if err != nil {
+		return nil, err
 	}
 
-	return &feishuPreviewHandle{messageIDs: []string{msgID}, chatID: chatID, rc: rc}, nil
+	effectiveRC := rc
+	effectiveRC.messageID = usedMID
+	return &feishuPreviewHandle{messageIDs: []string{newID}, chatID: chatID, rc: effectiveRC}, nil
 }
 
 // planCardUpdates decides how to reconcile existing message IDs against a
