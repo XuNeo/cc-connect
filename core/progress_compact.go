@@ -313,7 +313,7 @@ func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, age
 		state:      ProgressCardStateRunning,
 		agentName:  normalizeProgressAgentLabel(agentName),
 		lang:       lang,
-		maxEntries: 10,
+		maxEntries: 150,
 	}
 	if w.style != progressStyleCompact && w.style != progressStyleCard {
 		slog.Debug("progress writer disabled: unsupported style", "platform", p.Name(), "style", w.style)

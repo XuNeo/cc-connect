@@ -28,8 +28,8 @@ const telegramBotCommandLimit = 100
 const maxQueuedMessages = 5 // cap queued messages to bound memory usage
 
 const (
-	defaultThinkingMaxLen = 300
-	defaultToolMaxLen     = 500
+	defaultThinkingMaxLen = 0
+	defaultToolMaxLen     = 0
 )
 
 // Slow-operation thresholds. Operations exceeding these durations produce a
