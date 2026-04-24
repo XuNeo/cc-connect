@@ -51,6 +51,17 @@ type ProgressCardEntry struct {
 	Status   string                `json:"status,omitempty"`
 	ExitCode *int                  `json:"exit_code,omitempty"`
 	Success  *bool                 `json:"success,omitempty"`
+
+	// Panel-level metadata (new in 2026-04 collapsible card redesign).
+	// ID is the stable element_id used by Feishu collapsible_panel.
+	ID string `json:"id,omitempty"`
+	// DurationMs is the wall-clock time from tool_use to tool_result.
+	// Zero for thinking/info/error.
+	DurationMs int `json:"duration_ms,omitempty"`
+	// PartIdx and PartTotal are set (>0) when one logical entry was
+	// sharded across multiple panels due to the Feishu 30KB cap.
+	PartIdx   int `json:"part_idx,omitempty"`
+	PartTotal int `json:"part_total,omitempty"`
 }
 
 // ProgressCardPayload carries structured progress entries for platforms that
@@ -102,12 +113,16 @@ func BuildProgressCardPayloadV2(items []ProgressCardEntry, truncated bool, agent
 			kind = ProgressEntryInfo
 		}
 		cleaned = append(cleaned, ProgressCardEntry{
-			Kind:     kind,
-			Text:     text,
-			Tool:     strings.TrimSpace(item.Tool),
-			Status:   strings.TrimSpace(item.Status),
-			ExitCode: item.ExitCode,
-			Success:  item.Success,
+			Kind:       kind,
+			Text:       text,
+			Tool:       strings.TrimSpace(item.Tool),
+			Status:     strings.TrimSpace(item.Status),
+			ExitCode:   item.ExitCode,
+			Success:    item.Success,
+			ID:         strings.TrimSpace(item.ID),
+			DurationMs: item.DurationMs,
+			PartIdx:    item.PartIdx,
+			PartTotal:  item.PartTotal,
 		})
 	}
 	if len(cleaned) == 0 {
@@ -542,4 +557,94 @@ func trimCompactProgressText(s string, maxRunes int) string {
 	rs := []rune(s)
 	tail := strings.TrimLeft(string(rs[len(rs)-maxRunes:]), "\n")
 	return "…\n" + tail
+}
+
+// toolPanelTracker assigns stable panel IDs and computes tool call durations
+// by pairing tool_use events with their matching tool_result by tool_use_id.
+type toolPanelTracker struct {
+	seq     int
+	pending map[string]pendingToolCall
+}
+
+type pendingToolCall struct {
+	id    string
+	start time.Time
+}
+
+func newToolPanelTracker() *toolPanelTracker {
+	return &toolPanelTracker{pending: make(map[string]pendingToolCall)}
+}
+
+// onToolUse mutates entry to carry an ID + running status and records the
+// start time under toolUseID for later pairing.
+func (t *toolPanelTracker) onToolUse(toolUseID string, entry *ProgressCardEntry, now time.Time) {
+	t.seq++
+	entry.ID = makePanelID(entry.Tool, t.seq)
+	if entry.Status == "" {
+		entry.Status = "running"
+	}
+	if toolUseID != "" {
+		t.pending[toolUseID] = pendingToolCall{id: entry.ID, start: now}
+	}
+}
+
+// onToolResult mutates entry: copies the matching tool_use's ID (so the
+// renderer merges them into one panel), computes duration, sets status.
+func (t *toolPanelTracker) onToolResult(toolUseID string, entry *ProgressCardEntry, now time.Time) {
+	if p, ok := t.pending[toolUseID]; ok {
+		entry.ID = p.id
+		if d := now.Sub(p.start); d > 0 {
+			entry.DurationMs = int(d / time.Millisecond)
+		}
+		delete(t.pending, toolUseID)
+	} else {
+		// Orphan result (no matching tool_use in our window): give it a
+		// fresh ID so it still renders as its own panel.
+		t.seq++
+		entry.ID = makePanelID(entry.Tool, t.seq)
+	}
+	if entry.Status == "" {
+		if entry.Success != nil && !*entry.Success {
+			entry.Status = "fail"
+		} else if entry.ExitCode != nil && *entry.ExitCode != 0 {
+			entry.Status = "fail"
+		} else {
+			entry.Status = "ok"
+		}
+	}
+}
+
+// makePanelID produces a stable, Feishu-legal element_id prefix + seq.
+// Kept in core (not platform/feishu) to avoid an import cycle.
+func makePanelID(tool string, seq int) string {
+	var prefix string
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "bash", "shell", "run_shell_command":
+		prefix = "bsh"
+	case "read":
+		prefix = "rd"
+	case "write":
+		prefix = "wr"
+	case "edit":
+		prefix = "ed"
+	case "grep":
+		prefix = "gp"
+	case "glob":
+		prefix = "gb"
+	case "webfetch":
+		prefix = "wf"
+	case "websearch":
+		prefix = "ws"
+	case "todowrite":
+		prefix = "td"
+	case "task":
+		prefix = "tk"
+	case "skill":
+		prefix = "sk"
+	case "notebookedit":
+		prefix = "nb"
+	default:
+		prefix = "tl"
+	}
+	return prefix + "_" + strconv.Itoa(seq)
 }

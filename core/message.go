@@ -192,6 +192,7 @@ type Event struct {
 	ToolName     string         // populated for EventToolUse, EventPermissionRequest
 	ToolInput    string         // human-readable summary of tool input
 	ToolInputRaw map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
+	ToolUseID    string         // tool_use id for pairing EventToolUse with EventToolResult
 	ToolResult   string         // populated for EventToolResult
 	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
 	ToolExitCode *int           // optional exit code for EventToolResult

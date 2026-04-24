@@ -370,11 +370,13 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			if toolName == "AskUserQuestion" {
 				continue
 			}
-			if toolUseID, ok := item["id"].(string); ok && toolUseID != "" {
+			var toolUseID string
+			if id, ok := item["id"].(string); ok && id != "" {
+				toolUseID = id
 				cs.toolNames[toolUseID] = toolName
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
+			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary, ToolUseID: toolUseID}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -461,6 +463,7 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 		evt := core.Event{
 			Type:        core.EventToolResult,
 			ToolName:    toolName,
+			ToolUseID:   toolUseID,
 			ToolResult:  result,
 			ToolSuccess: &success,
 		}

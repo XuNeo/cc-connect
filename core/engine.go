@@ -2632,6 +2632,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	}
 	sp := newStreamPreview(e.streamPreview, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
 	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
+	panelTracker := newToolPanelTracker()
 	state.mu.Unlock()
 
 	// Idle timeout: 0 = disabled
@@ -2818,7 +2819,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 				toolMsg := fmt.Sprintf(e.i18n.T(MsgTool), toolCount, event.ToolName, formattedInput)
-				if !cp.AppendEvent(ProgressEntryToolUse, toolInput, event.ToolName, toolMsg) {
+				useEntry := ProgressCardEntry{Kind: ProgressEntryToolUse, Text: toolInput, Tool: event.ToolName}
+				panelTracker.onToolUse(event.ToolUseID, &useEntry, time.Now())
+				if !cp.AppendStructured(useEntry, toolMsg) {
 					for _, chunk := range SplitMessageCodeFenceAware(toolMsg, maxPlatformMessageLen) {
 						sendWorkspace(p, replyCtx, chunk)
 					}
@@ -2844,6 +2847,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						ExitCode: event.ToolExitCode,
 						Success:  event.ToolSuccess,
 					}
+					panelTracker.onToolResult(event.ToolUseID, &entry, time.Now())
 					if !cp.AppendStructured(entry, resultMsg) {
 						if !SuppressStandaloneToolResultEvent(p) {
 							e.sendRaw(p, replyCtx, resultMsg)
@@ -3184,6 +3188,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
 				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
+				panelTracker = newToolPanelTracker()
 
 				session.AddHistory("user", queued.content)
 
