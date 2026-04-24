@@ -2672,6 +2672,27 @@ func isThreadSessionKey(sessionKey string) bool {
 	return ok
 }
 
+// previewRetryMessageIDs returns the ordered list of reply-target message IDs
+// to try when posting a progress card. The trigger message (rc.messageID) is
+// tried first; if sessionKey encodes a thread root and it differs from the
+// trigger, that root is tried next. Callers fall back to Create (no reply
+// target) if every candidate returns errKindReplyTargetGone.
+func previewRetryMessageIDs(rc replyContext) []string {
+	ids := make([]string, 0, 2)
+	if rc.messageID != "" {
+		ids = append(ids, rc.messageID)
+	}
+	if rc.sessionKey != "" {
+		parts := strings.SplitN(rc.sessionKey, ":", 3)
+		if len(parts) == 3 {
+			if rootID, ok := parseThreadRootID(parts[2]); ok && rootID != "" && rootID != rc.messageID {
+				ids = append(ids, rootID)
+			}
+		}
+	}
+	return ids
+}
+
 // feishuPreviewHandle stores the message IDs for an editable preview that
 // may span multiple interactive cards.
 type feishuPreviewHandle struct {
