@@ -911,11 +911,14 @@ func TestBuildPreviewCardJSON_ProgressPayloadUsesStructuredCard(t *testing.T) {
 	if strings.Contains(cardJSON, "\"tag\":\"note\"") {
 		t.Fatalf("card JSON should not use deprecated note tag, got %q", cardJSON)
 	}
-	if !strings.Contains(cardJSON, "\"text_color\":\"grey\"") {
-		t.Fatalf("card JSON should render thinking with grey style, got %q", cardJSON)
+	if !strings.Contains(cardJSON, "\"tag\":\"collapsible_panel\"") {
+		t.Fatalf("card JSON should render entries as collapsible panels, got %q", cardJSON)
 	}
-	if !strings.Contains(cardJSON, "\\u003ctext_tag color='blue'\\u003eTool") {
-		t.Fatalf("card JSON should include tool label, got %q", cardJSON)
+	if !strings.Contains(cardJSON, "💭") {
+		t.Fatalf("card JSON should include thinking panel with 💭 header, got %q", cardJSON)
+	}
+	if !strings.Contains(cardJSON, "Bash") {
+		t.Fatalf("card JSON should include tool panel with tool name, got %q", cardJSON)
 	}
 
 	var card map[string]any

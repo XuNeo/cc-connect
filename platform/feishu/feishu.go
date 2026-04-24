@@ -2942,66 +2942,11 @@ func progressResultDot(item core.ProgressCardEntry) string {
 }
 
 func renderProgressEntryElement(item core.ProgressCardEntry, lang string) map[string]any {
-	text := strings.TrimSpace(item.Text)
-	if text == "" {
-		text = " "
-	}
 	switch item.Kind {
-	case core.ProgressEntryThinking:
-		return map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    "💭 " + inlineCodeText(text),
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		}
-	case core.ProgressEntryToolUse:
-		toolName := strings.TrimSpace(item.Tool)
-		if toolName == "" {
-			toolName = "Tool"
-		}
-		content := fmt.Sprintf("<text_tag color='blue'>%s</text_tag> `%s`", progressKindLabel(item.Kind, lang), inlineCodeText(toolName))
-		if body := formatProgressToolInput(toolName, text); body != "" {
-			content += "\n" + body
-		}
-		return map[string]any{
-			"tag":     "markdown",
-			"content": content,
-		}
-	case core.ProgressEntryToolResult:
-		toolName := strings.TrimSpace(item.Tool)
-		content := fmt.Sprintf("<text_tag color='turquoise'>%s</text_tag>", progressKindLabel(item.Kind, lang))
-		if toolName != "" {
-			content += " `" + inlineCodeText(toolName) + "`"
-		}
-		dot := progressResultDot(item)
-		meta := dot
-		if item.ExitCode != nil {
-			meta += fmt.Sprintf(" exit code: `%d`", *item.ExitCode)
-		}
-		content += "\n" + meta
-		if body := formatProgressToolResult(item.Text); body != "" {
-			content += "\n" + body
-		} else {
-			content += "\n_" + progressNoOutputText(lang) + "_"
-		}
-		return map[string]any{
-			"tag":     "markdown",
-			"content": content,
-		}
 	case core.ProgressEntryError:
-		content := fmt.Sprintf("<text_tag color='red'>%s</text_tag>\n%s", progressKindLabel(item.Kind, lang), preprocessFeishuMarkdown(sanitizeMarkdownURLs(text)))
-		return map[string]any{
-			"tag":     "markdown",
-			"content": content,
-		}
+		return renderErrorElement(item, lang)
 	default:
-		return map[string]any{
-			"tag":     "markdown",
-			"content": preprocessFeishuMarkdown(sanitizeMarkdownURLs(text)),
-		}
+		return renderInfoElement(item, lang)
 	}
 }
 
@@ -3014,7 +2959,11 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 	agent := progressAgentLabel(payload.Agent)
 	title, template, footer := progressStateMeta(payload.State, payload.Lang, agent)
 
-	elements := make([]map[string]any, 0, len(items)+3)
+	paired := pairToolEntries(items)
+	lastRunningID := findLastRunningID(paired)
+	lastThinkingID := findLastThinkingID(paired)
+
+	elements := make([]map[string]any, 0, len(paired)+3)
 	if payload.Truncated {
 		truncatedText := "Showing latest updates only."
 		if isZhLikeProgressLang(payload.Lang) {
@@ -3029,17 +2978,22 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 				"text_color": "grey",
 			},
 		})
-		elements = append(elements, map[string]any{"tag": "hr"})
 	}
 
-	for i, item := range items {
-		elements = append(elements, renderProgressEntryElement(item, payload.Lang))
-		if i < len(items)-1 {
-			elements = append(elements, map[string]any{"tag": "hr"})
+	for _, p := range paired {
+		switch p.Use.Kind {
+		case core.ProgressEntryThinking:
+			elements = append(elements, buildThinkingPanel(p.Use, payload.Lang, p.Use.ID == lastThinkingID))
+		case core.ProgressEntryToolUse:
+			elements = append(elements, buildToolPanel(p.Use, p.Result, payload.Lang, p.Use.ID == lastRunningID))
+		case core.ProgressEntryError:
+			elements = append(elements, renderErrorElement(p.Use, payload.Lang))
+		default:
+			elements = append(elements, renderInfoElement(p.Use, payload.Lang))
 		}
 	}
+
 	if footer != "" {
-		elements = append(elements, map[string]any{"tag": "hr"})
 		elements = append(elements, map[string]any{
 			"tag": "div",
 			"text": map[string]any{
@@ -3058,15 +3012,10 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 			"update_multi":     true,
 		},
 		"header": map[string]any{
-			"title": map[string]any{
-				"tag":     "plain_text",
-				"content": title,
-			},
+			"title":    map[string]any{"tag": "plain_text", "content": title},
 			"template": template,
 		},
-		"body": map[string]any{
-			"elements": elements,
-		},
+		"body": map[string]any{"elements": elements},
 	}
 	b, _ := json.Marshal(card)
 	return string(b)
@@ -3417,4 +3366,76 @@ func (p *Platform) onBotMenu(event *larkapplication.P2BotMenuV6) error {
 		ReplyCtx:   replyContext{chatID: userID, sessionKey: sessionKey},
 	})
 	return nil
+}
+
+type pairedEntry struct {
+	Use    core.ProgressCardEntry
+	Result *core.ProgressCardEntry // nil for thinking/error/info and running-without-result tool calls
+}
+
+// pairToolEntries folds (tool_use, tool_result) pairs sharing the same ID
+// into a single pairedEntry so the renderer emits one panel per logical tool
+// invocation. Orphan tool_use (no result yet) keeps Result nil.
+func pairToolEntries(items []core.ProgressCardEntry) []pairedEntry {
+	idx := make(map[string]int)
+	out := make([]pairedEntry, 0, len(items))
+	for i := range items {
+		it := items[i]
+		switch it.Kind {
+		case core.ProgressEntryToolResult:
+			if it.ID != "" {
+				if k, ok := idx[it.ID]; ok {
+					cpy := it
+					out[k].Result = &cpy
+					continue
+				}
+			}
+			synth := it
+			synth.Kind = core.ProgressEntryToolUse
+			out = append(out, pairedEntry{Use: synth, Result: nil})
+			if synth.ID != "" {
+				idx[synth.ID] = len(out) - 1
+			}
+		case core.ProgressEntryToolUse:
+			out = append(out, pairedEntry{Use: it})
+			if it.ID != "" {
+				idx[it.ID] = len(out) - 1
+			}
+		default:
+			out = append(out, pairedEntry{Use: it})
+		}
+	}
+	return out
+}
+
+func findLastRunningID(paired []pairedEntry) string {
+	for i := len(paired) - 1; i >= 0; i-- {
+		p := paired[i]
+		if p.Use.Kind == core.ProgressEntryToolUse && p.Result == nil {
+			return p.Use.ID
+		}
+	}
+	return ""
+}
+
+func findLastThinkingID(paired []pairedEntry) string {
+	for i := len(paired) - 1; i >= 0; i-- {
+		if paired[i].Use.Kind == core.ProgressEntryThinking {
+			return paired[i].Use.ID
+		}
+	}
+	return ""
+}
+
+func renderErrorElement(item core.ProgressCardEntry, lang string) map[string]any {
+	label := progressKindLabel(core.ProgressEntryError, lang)
+	content := fmt.Sprintf("<text_tag color='red'>%s</text_tag>\n%s", label, preprocessFeishuMarkdown(sanitizeMarkdownURLs(item.Text)))
+	return map[string]any{"tag": "markdown", "content": content}
+}
+
+func renderInfoElement(item core.ProgressCardEntry, lang string) map[string]any {
+	return map[string]any{
+		"tag":     "markdown",
+		"content": preprocessFeishuMarkdown(sanitizeMarkdownURLs(item.Text)),
+	}
 }
