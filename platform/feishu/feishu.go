@@ -3340,7 +3340,7 @@ func (p *Platform) recoverPatchError(ctx context.Context, err error, h *feishuPr
 			return retryErr
 		}
 		return nil
-	case errKindExpired:
+	case errKindExpired, errKindReplyTargetGone:
 		if progressPayload == nil || h.chatID == "" {
 			return err
 		}
