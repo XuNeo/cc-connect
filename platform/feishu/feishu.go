@@ -2453,7 +2453,7 @@ func (p *Platform) replyMessage(ctx context.Context, rc replyContext, msgType, c
 				return fmt.Errorf("%s: reply api call: %w", p.tag(), err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: reply failed code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+				return wrapAPIError(p.tag(), "reply", resp.Code, resp.Msg)
 			}
 			return nil
 		})
@@ -2476,7 +2476,7 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 				return fmt.Errorf("%s: %s api call: %w", p.tag(), op, err)
 			}
 			if !resp.Success() {
-				return fmt.Errorf("%s: %s failed code=%d msg=%s", p.tag(), op, resp.Code, resp.Msg)
+				return wrapAPIError(p.tag(), op, resp.Code, resp.Msg)
 			}
 			return nil
 		})
@@ -3124,7 +3124,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 					return fmt.Errorf("%s: send preview (reply): %w", p.tag(), err)
 				}
 				if !resp.Success() {
-					return fmt.Errorf("%s: send preview (reply) code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+					return wrapAPIError(p.tag(), "send preview (reply)", resp.Code, resp.Msg)
 				}
 				return nil
 			})
@@ -3152,7 +3152,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 					return fmt.Errorf("%s: send preview: %w", p.tag(), err)
 				}
 				if !resp.Success() {
-					return fmt.Errorf("%s: send preview code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+					return wrapAPIError(p.tag(), "send preview", resp.Code, resp.Msg)
 				}
 				return nil
 			})

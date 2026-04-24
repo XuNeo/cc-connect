@@ -48,3 +48,10 @@ func classifyFeishuError(err error) feishuErrKind {
 	}
 	return errKindOther
 }
+
+// wrapAPIError builds the canonical error chain for a non-success Feishu
+// response: "<tag>: <op>: feishu: code=<N> msg=<M>" with a nested
+// *feishuAPIError so classifyFeishuError can recover the code.
+func wrapAPIError(tag, op string, code int, msg string) error {
+	return fmt.Errorf("%s: %s: %w", tag, op, &feishuAPIError{Code: code, Msg: msg})
+}
