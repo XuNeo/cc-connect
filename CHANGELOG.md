@@ -13,6 +13,12 @@
 
 ### Fixed
 - Data loss on long tool outputs: the engine-layer truncation has been replaced with size-based sharding (18–28 KB split into multi-part panels) and an attachment fallback (>28 KB uploaded as a `.txt` file).
+- **Resilience fix (2026-04-24):** a recalled trigger message no longer
+  permanently demotes the session to legacy `🔧 Tool #N:` markdown.
+  `SendPreviewStart` now walks `trigger → thread root → Create` when it
+  hits 230011, and `recoverPatchError` recreates the card when the bot's
+  own card is withdrawn. All non-success Feishu responses are wrapped as
+  `*feishuAPIError` so the classifier can route them.
 
 ## v1.3.2 (2026-04-21)
 
