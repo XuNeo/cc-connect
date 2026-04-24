@@ -2693,6 +2693,31 @@ func previewRetryMessageIDs(rc replyContext) []string {
 	return ids
 }
 
+// orchestrateSendPreview iterates over previewRetryMessageIDs(rc) calling
+// send for each candidate. On errKindReplyTargetGone it tries the next
+// candidate. On any other error it aborts and returns the error. If every
+// candidate returns errKindReplyTargetGone, a final Create fallback
+// (messageID=="") is attempted.
+//
+// Returns the new message ID, the candidate messageID that was used (empty
+// string if Create fallback succeeded), and any terminal error.
+func orchestrateSendPreview(rc replyContext, send func(messageID string) (newMessageID string, err error)) (string, string, error) {
+	for _, mid := range previewRetryMessageIDs(rc) {
+		newID, err := send(mid)
+		if err == nil {
+			return newID, mid, nil
+		}
+		if classifyFeishuError(err) != errKindReplyTargetGone {
+			return "", "", err
+		}
+	}
+	newID, err := send("")
+	if err != nil {
+		return "", "", err
+	}
+	return newID, "", nil
+}
+
 // feishuPreviewHandle stores the message IDs for an editable preview that
 // may span multiple interactive cards.
 type feishuPreviewHandle struct {
