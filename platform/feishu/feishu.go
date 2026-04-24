@@ -3055,6 +3055,7 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 		"schema": "2.0",
 		"config": map[string]any{
 			"wide_screen_mode": true,
+			"update_multi":     true,
 		},
 		"header": map[string]any{
 			"title": map[string]any{
