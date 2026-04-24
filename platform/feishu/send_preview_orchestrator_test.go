@@ -131,6 +131,60 @@ func TestOrchestrateSendPreview_CreateFallbackErrorPropagates(t *testing.T) {
 	}
 }
 
+// Regression: noReplyToTrigger=true must force Create even when the trigger
+// messageID and thread root are both present. Before this fix, the
+// orchestrator happily returned [messageID, threadRoot] and SendPreviewStart
+// would quote-reply to the user's trigger message, silently violating the
+// platform's reply_to_trigger=false config.
+func TestOrchestrateSendPreview_NoReplyToTrigger_ForcesCreate(t *testing.T) {
+	calls := []string{}
+	send := func(mid string) (string, error) {
+		calls = append(calls, mid)
+		return "om_new", nil
+	}
+	rc := replyContext{
+		messageID:  "om_trigger",
+		chatID:     "oc_chat",
+		sessionKey: "feishu:oc_chat:root:om_root",
+	}
+	// Simulate noReplyToTrigger=true via the shouldReply parameter.
+	newID, usedMID, err := orchestrateSendPreviewWithOpts(rc, false, send)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if newID != "om_new" || usedMID != "" {
+		t.Errorf("newID=%q usedMID=%q, want (om_new, \"\") — Create fallback", newID, usedMID)
+	}
+	if len(calls) != 1 || calls[0] != "" {
+		t.Errorf("calls=%v, want exactly one Create call with empty mid", calls)
+	}
+}
+
+func TestOrchestrateSendPreview_ShouldReplyTrue_WalksCandidates(t *testing.T) {
+	// Baseline: shouldReply=true behaves identically to the existing
+	// orchestrateSendPreview.
+	calls := []string{}
+	send := func(mid string) (string, error) {
+		calls = append(calls, mid)
+		if mid == "om_trigger" {
+			return "", &feishuAPIError{Code: 230011}
+		}
+		return "om_new", nil
+	}
+	rc := replyContext{
+		messageID:  "om_trigger",
+		chatID:     "oc_chat",
+		sessionKey: "feishu:oc_chat:root:om_root",
+	}
+	newID, usedMID, err := orchestrateSendPreviewWithOpts(rc, true, send)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if newID != "om_new" || usedMID != "om_root" {
+		t.Errorf("newID=%q usedMID=%q, want (om_new, om_root)", newID, usedMID)
+	}
+}
+
 // TestSendPreviewStart_ThreadPreservedAfterWithdraw verifies the end-to-end
 // behaviour: a withdrawn trigger message causes one 230011, then the retry
 // against the thread root succeeds, and the resulting handle carries the

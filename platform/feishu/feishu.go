@@ -2702,13 +2702,24 @@ func previewRetryMessageIDs(rc replyContext) []string {
 // Returns the new message ID, the candidate messageID that was used (empty
 // string if Create fallback succeeded), and any terminal error.
 func orchestrateSendPreview(rc replyContext, send func(messageID string) (newMessageID string, err error)) (string, string, error) {
-	for _, mid := range previewRetryMessageIDs(rc) {
-		newID, err := send(mid)
-		if err == nil {
-			return newID, mid, nil
-		}
-		if classifyFeishuError(err) != errKindReplyTargetGone {
-			return "", "", err
+	return orchestrateSendPreviewWithOpts(rc, true, send)
+}
+
+// orchestrateSendPreviewWithOpts is orchestrateSendPreview with an explicit
+// shouldReply gate. When shouldReply=false (noReplyToTrigger=true in the
+// platform config) the candidate walk is skipped entirely and send is called
+// once with messageID="" so the card posts via Create without quoting the
+// user's trigger message.
+func orchestrateSendPreviewWithOpts(rc replyContext, shouldReply bool, send func(messageID string) (newMessageID string, err error)) (string, string, error) {
+	if shouldReply {
+		for _, mid := range previewRetryMessageIDs(rc) {
+			newID, err := send(mid)
+			if err == nil {
+				return newID, mid, nil
+			}
+			if classifyFeishuError(err) != errKindReplyTargetGone {
+				return "", "", err
+			}
 		}
 	}
 	newID, err := send("")
@@ -3136,9 +3147,12 @@ func buildPreviewCardJSON(content string) string {
 }
 
 // SendPreviewStart sends a new card message and returns a handle for subsequent edits.
-// When the trigger reply target is withdrawn it walks previewRetryMessageIDs(rc)
-// — thread root next, then plain Create — keeping the card in the thread if
-// at all possible.
+// Delegation: orchestrateSendPreviewWithOpts walks previewRetryMessageIDs(rc) —
+// trigger message first, then thread root from sessionKey, then Create as last
+// resort. Each errKindReplyTargetGone (code 230011) advances to the next
+// candidate so a withdrawn trigger does not demote the session out of its
+// thread. When noReplyToTrigger=true, the candidate walk is skipped and the
+// card posts via Create without quoting the trigger message.
 func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content string) (any, error) {
 	if !p.useInteractiveCard {
 		return nil, core.ErrNotSupported
@@ -3214,7 +3228,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		return *resp.Data.MessageId, nil
 	}
 
-	newID, usedMID, err := orchestrateSendPreview(rc, send)
+	newID, usedMID, err := orchestrateSendPreviewWithOpts(rc, p.shouldUseThreadOrReplyAPI(rc), send)
 	if err != nil {
 		return nil, err
 	}
