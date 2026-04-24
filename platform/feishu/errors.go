@@ -24,6 +24,7 @@ const (
 	errKindExpired
 	errKindTooComplex
 	errKindChatUnavailable
+	errKindReplyTargetGone
 )
 
 // classifyFeishuError maps a wrapped *feishuAPIError to one of the known
@@ -42,6 +43,8 @@ func classifyFeishuError(err error) feishuErrKind {
 		return errKindTooComplex
 	case 230002:
 		return errKindChatUnavailable
+	case 230011:
+		return errKindReplyTargetGone
 	}
 	return errKindOther
 }
