@@ -223,6 +223,37 @@ func TestCompactProgressWriter_AppliesTransformToCardPayloadEntries(t *testing.T
 	}
 }
 
+// Card+payload mode must never window/shrink the items slice — the platform
+// paginator opens extra cards for overflow, and shrinking would cause
+// cardCount to decrease and trigger bot-self-withdraw. Append well past the
+// legacy 150 cap and assert items keeps growing and truncated stays false.
+func TestCompactProgressWriter_CardPayloadNeverWindows(t *testing.T) {
+	p := &stubCompactProgressPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+		style:              "card",
+		supportPayload:     true,
+	}
+	w := newCompactProgressWriter(context.Background(), p, "ctx", "codex", LangEnglish, nil)
+
+	const appendCount = 220 // well past the legacy 150 cap
+	for i := 0; i < appendCount; i++ {
+		text := "step-" + strings.Repeat("x", 3)
+		if ok := w.AppendStructured(ProgressCardEntry{
+			Kind: ProgressEntryInfo,
+			Text: text,
+		}, text); !ok {
+			t.Fatalf("AppendStructured #%d = false, want true", i)
+		}
+	}
+
+	if len(w.items) != appendCount {
+		t.Errorf("w.items len = %d, want %d (windowing must not drop items)", len(w.items), appendCount)
+	}
+	if w.truncated {
+		t.Error("w.truncated = true, want false (no windowing should have triggered)")
+	}
+}
+
 func TestCompactProgressWriter_DoesNotTransformToolResults(t *testing.T) {
 	p := &stubCompactProgressPlatform{
 		stubPlatformEngine: stubPlatformEngine{n: "feishu"},

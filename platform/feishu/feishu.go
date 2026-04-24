@@ -3242,18 +3242,19 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 // freshly-built list of card JSONs:
 //   - patchCount = min(len(existing), len(cards)) existing IDs are patched
 //   - sendCount  = extra cards beyond that are sent fresh
-//   - toDelete   = existing IDs past len(cards) that should be removed
+//
+// Shrinking is not expressible by design: card mode with structured payload
+// grows monotonically (see compactProgressWriter), so excess existing IDs
+// cannot appear. If a future regression ever violated that invariant, the
+// excess would be left untouched rather than silently withdrawn.
 //
 // Pure function — no API calls.
-func planCardUpdates(existing []string, cardCount int) (patchCount int, sendCount int, toDelete []string) {
+func planCardUpdates(existing []string, cardCount int) (patchCount int, sendCount int) {
 	patchCount = len(existing)
 	if cardCount < patchCount {
 		patchCount = cardCount
 	}
 	sendCount = cardCount - patchCount
-	if len(existing) > patchCount {
-		toDelete = append(toDelete, existing[patchCount:]...)
-	}
 	return
 }
 
@@ -3284,7 +3285,7 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 		cards = []string{buildCardJSON(" ")}
 	}
 
-	patchCount, sendCount, toDelete := planCardUpdates(h.messageIDs, len(cards))
+	patchCount, sendCount := planCardUpdates(h.messageIDs, len(cards))
 
 	if p.updateQ == nil {
 		p.updateQ = newUpdateQueue(5)
@@ -3309,11 +3310,6 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 				return err
 			}
 			newIDs = append(newIDs, id)
-		}
-	}
-	for _, id := range toDelete {
-		if err := p.deleteSingleCard(ctx, id); err != nil {
-			slog.Warn(p.tag()+": delete stale preview card failed", "id", id, "err", err)
 		}
 	}
 	h.messageIDs = newIDs

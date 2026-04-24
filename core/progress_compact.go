@@ -332,6 +332,11 @@ func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, age
 	if w.style == progressStyleCard {
 		if progressCardPayloadForTarget(p, replyCtx) {
 			w.usePayload = true
+			// Structured card payload is paginated across multiple cards by the
+			// platform side; shrinking items here would shrink the card count
+			// and cause bot-self-withdraw of earlier cards. Disable windowing
+			// and let the paginator grow the card count monotonically.
+			w.maxEntries = 0
 		}
 	}
 	slog.Debug("progress writer enabled", "platform", p.Name(), "style", w.style, "use_payload", w.usePayload)
