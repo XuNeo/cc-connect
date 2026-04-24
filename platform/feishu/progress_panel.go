@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	core "github.com/chenhg5/cc-connect/core"
 )
@@ -50,6 +51,26 @@ func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lan
 		{"tag": "markdown", "content": cmdBody},
 	}
 
+	if res != nil && res.Status == "attach" {
+		dot := progressResultDot(*res)
+		meta := dot
+		if res.ExitCode != nil {
+			meta += fmt.Sprintf(" exit `%d`", *res.ExitCode)
+		}
+		if res.DurationMs > 0 {
+			meta += " · " + formatDuration(res.DurationMs)
+		}
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": "**" + sectionLabel("result", lang) + "** " + meta,
+		})
+		elements = append(elements, map[string]any{
+			"tag":     "markdown",
+			"content": attachmentBody(res.Text, lang),
+		})
+		return wrapPanel(expanded, elementID, title, elements)
+	}
+
 	if res != nil {
 		dot := progressResultDot(*res)
 		meta := dot
@@ -76,24 +97,33 @@ func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lan
 		})
 	}
 
+	return wrapPanel(expanded, elementID, title, elements)
+}
+
+func wrapPanel(expanded bool, elementID, title string, elements []map[string]any) map[string]any {
 	return map[string]any{
 		"tag":        "collapsible_panel",
 		"expanded":   expanded,
 		"element_id": elementID,
 		"header": map[string]any{
-			"title": map[string]any{
-				"tag":     "plain_text",
-				"content": title,
-			},
-			"icon": map[string]any{
-				"tag":   "standard_icon",
-				"token": "down-small-ccm_outlined",
-			},
+			"title": map[string]any{"tag": "plain_text", "content": title},
+			"icon": map[string]any{"tag": "standard_icon", "token": "down-small-ccm_outlined"},
 			"icon_position":       "right",
 			"icon_expanded_angle": -180,
 		},
 		"elements": elements,
 	}
+}
+
+func attachmentBody(text, lang string) string {
+	total := utf8.RuneCountInString(text)
+	head := runeHead(text, 500)
+	tail := runeTail(text, 500)
+	notice := fmt.Sprintf("_full output %d chars, sent as attachment_", total)
+	if isZhLikeProgressLang(lang) {
+		notice = fmt.Sprintf("_完整输出 %d 字，已作为附件发送_", total)
+	}
+	return "```\n" + head + "\n...\n" + tail + "\n```\n" + notice
 }
 
 func durationFrom(res *core.ProgressCardEntry) int {

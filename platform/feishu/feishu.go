@@ -20,6 +20,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chenhg5/cc-connect/core"
 
@@ -2669,10 +2670,11 @@ func isThreadSessionKey(sessionKey string) bool {
 	return ok
 }
 
-// feishuPreviewHandle stores the message ID for an editable preview message.
+// feishuPreviewHandle stores the message IDs for an editable preview that
+// may span multiple interactive cards.
 type feishuPreviewHandle struct {
-	messageID string
-	chatID    string
+	messageIDs []string
+	chatID     string
 }
 
 // buildCardJSON builds a Feishu interactive card JSON string with a markdown element.
@@ -2951,19 +2953,45 @@ func renderProgressEntryElement(item core.ProgressCardEntry, lang string) map[st
 }
 
 func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string {
-	items := normalizeProgressItems(payload)
-	if len(items) == 0 {
+	cards := buildProgressCardJSONs(payload)
+	if len(cards) == 0 {
 		return buildCardJSON(" ")
 	}
+	return cards[0]
+}
+
+// buildProgressCardElements returns the ordered body elements plus header
+// title, template, and footer for the given payload. Sharding and pairing
+// are applied here so the caller only needs to paginate.
+func buildProgressCardElements(payload *core.ProgressCardPayload) (elements []map[string]any, title, template, footer string) {
+	items := normalizeProgressItems(payload)
+	if len(items) == 0 {
+		title, template, footer = progressStateMeta(payload.State, payload.Lang, progressAgentLabel(payload.Agent))
+		return nil, title, template, footer
+	}
+
+	const (
+		shardInlineRunes = 18_000
+		attachThreshold  = 28_000
+	)
+	expanded := make([]core.ProgressCardEntry, 0, len(items))
+	for _, it := range items {
+		if it.Kind == core.ProgressEntryToolResult || it.Kind == core.ProgressEntryThinking {
+			expanded = append(expanded, shardLargeEntry(it, shardInlineRunes, attachThreshold)...)
+		} else {
+			expanded = append(expanded, it)
+		}
+	}
+	items = expanded
 
 	agent := progressAgentLabel(payload.Agent)
-	title, template, footer := progressStateMeta(payload.State, payload.Lang, agent)
+	title, template, footer = progressStateMeta(payload.State, payload.Lang, agent)
 
 	paired := pairToolEntries(items)
 	lastRunningID := findLastRunningID(paired)
 	lastThinkingID := findLastThinkingID(paired)
 
-	elements := make([]map[string]any, 0, len(paired)+3)
+	elements = make([]map[string]any, 0, len(paired)+2)
 	if payload.Truncated {
 		truncatedText := "Showing latest updates only."
 		if isZhLikeProgressLang(payload.Lang) {
@@ -2979,7 +3007,6 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 			},
 		})
 	}
-
 	for _, p := range paired {
 		switch p.Use.Kind {
 		case core.ProgressEntryThinking:
@@ -2992,33 +3019,54 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 			elements = append(elements, renderInfoElement(p.Use, payload.Lang))
 		}
 	}
+	return elements, title, template, footer
+}
 
-	if footer != "" {
-		elements = append(elements, map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    footer,
-				"text_size":  "notation",
-				"text_color": "grey",
+// buildProgressCardJSONs renders the payload as one or more card JSON
+// strings, splitting the element list across cards when the 150 element /
+// 18 KB budget would be exceeded. Each card shares the same header
+// template and gets a (N/M) suffix.
+func buildProgressCardJSONs(payload *core.ProgressCardPayload) []string {
+	elements, title, template, footer := buildProgressCardElements(payload)
+	if len(elements) == 0 {
+		return []string{buildCardJSON(" ")}
+	}
+	pages := paginateElements(elements, 150, 18_000)
+	if len(pages) == 0 {
+		return []string{buildCardJSON(" ")}
+	}
+
+	out := make([]string, 0, len(pages))
+	for i, page := range pages {
+		pageTitle := title
+		if len(pages) > 1 {
+			pageTitle = fmt.Sprintf("%s (%d/%d)", title, i+1, len(pages))
+		}
+		pageElements := page
+		if i == len(pages)-1 && footer != "" {
+			pageElements = append(pageElements, map[string]any{
+				"tag": "div",
+				"text": map[string]any{
+					"tag":        "plain_text",
+					"content":    footer,
+					"text_size":  "notation",
+					"text_color": "grey",
+				},
+			})
+		}
+		card := map[string]any{
+			"schema": "2.0",
+			"config": map[string]any{"wide_screen_mode": true, "update_multi": true},
+			"header": map[string]any{
+				"title":    map[string]any{"tag": "plain_text", "content": pageTitle},
+				"template": template,
 			},
-		})
+			"body": map[string]any{"elements": pageElements},
+		}
+		b, _ := json.Marshal(card)
+		out = append(out, string(b))
 	}
-
-	card := map[string]any{
-		"schema": "2.0",
-		"config": map[string]any{
-			"wide_screen_mode": true,
-			"update_multi":     true,
-		},
-		"header": map[string]any{
-			"title":    map[string]any{"tag": "plain_text", "content": title},
-			"template": template,
-		},
-		"body": map[string]any{"elements": elements},
-	}
-	b, _ := json.Marshal(card)
-	return string(b)
+	return out
 }
 
 func buildPreviewCardJSON(content string) string {
@@ -3107,7 +3155,26 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		return nil, fmt.Errorf("%s: send preview: no message ID returned", p.tag())
 	}
 
-	return &feishuPreviewHandle{messageID: msgID, chatID: chatID}, nil
+	return &feishuPreviewHandle{messageIDs: []string{msgID}, chatID: chatID}, nil
+}
+
+// planCardUpdates decides how to reconcile existing message IDs against a
+// freshly-built list of card JSONs:
+//   - patchCount = min(len(existing), len(cards)) existing IDs are patched
+//   - sendCount  = extra cards beyond that are sent fresh
+//   - toDelete   = existing IDs past len(cards) that should be removed
+//
+// Pure function — no API calls.
+func planCardUpdates(existing []string, cardCount int) (patchCount int, sendCount int, toDelete []string) {
+	patchCount = len(existing)
+	if cardCount < patchCount {
+		patchCount = cardCount
+	}
+	sendCount = cardCount - patchCount
+	if len(existing) > patchCount {
+		toDelete = append(toDelete, existing[patchCount:]...)
+	}
+	return
 }
 
 // UpdateMessage edits an existing card message identified by previewHandle.
@@ -3116,27 +3183,61 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	if !p.useInteractiveCard {
 		return core.ErrNotSupported
 	}
-
 	h, ok := previewHandle.(*feishuPreviewHandle)
 	if !ok {
 		return fmt.Errorf("%s: invalid preview handle type %T", p.tag(), previewHandle)
 	}
 
-	cardJSON := ""
+	var progressPayload *core.ProgressCardPayload
+	var cards []string
 	if payload, ok := core.ParseProgressCardPayload(content); ok {
-		cardJSON = buildProgressCardJSONFromPayload(payload)
+		progressPayload = payload
+		cards = buildProgressCardJSONs(payload)
 	} else {
 		processed := content
 		if containsMarkdown(content) {
 			processed = preprocessFeishuMarkdown(content)
 		}
-		cardJSON = buildCardJSON(sanitizeMarkdownURLs(processed))
+		cards = []string{buildCardJSON(sanitizeMarkdownURLs(processed))}
 	}
+	if len(cards) == 0 {
+		cards = []string{buildCardJSON(" ")}
+	}
+
+	patchCount, sendCount, toDelete := planCardUpdates(h.messageIDs, len(cards))
+
+	for i := 0; i < patchCount; i++ {
+		if err := p.patchSingleCard(ctx, h.messageIDs[i], cards[i]); err != nil {
+			return err
+		}
+	}
+	newIDs := append([]string{}, h.messageIDs[:patchCount]...)
+	if sendCount > 0 && h.chatID != "" {
+		for i := 0; i < sendCount; i++ {
+			id, err := p.sendCardToChat(ctx, h.chatID, cards[patchCount+i])
+			if err != nil {
+				return err
+			}
+			newIDs = append(newIDs, id)
+		}
+	}
+	for _, id := range toDelete {
+		if err := p.deleteSingleCard(ctx, id); err != nil {
+			slog.Warn(p.tag()+": delete stale preview card failed", "id", id, "err", err)
+		}
+	}
+	h.messageIDs = newIDs
+
+	if progressPayload != nil && h.chatID != "" {
+		go p.uploadAttachmentsFromPayload(ctx, h.chatID, progressPayload)
+	}
+	return nil
+}
+
+func (p *Platform) patchSingleCard(ctx context.Context, messageID, cardJSON string) error {
 	req := larkim.NewPatchMessageReqBuilder().
-		MessageId(h.messageID).
-		Body(larkim.NewPatchMessageReqBodyBuilder().
-			Content(cardJSON).
-			Build()).
+		MessageId(messageID).
+		Body(larkim.NewPatchMessageReqBodyBuilder().Content(cardJSON).Build()).
 		Build()
 	return p.withTransientRetry(ctx, "patch message", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "patch message", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
@@ -3151,6 +3252,102 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 		})
 	})
 }
+
+func (p *Platform) sendCardToChat(ctx context.Context, chatID, cardJSON string) (string, error) {
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(larkim.ReceiveIdTypeChatId).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(chatID).
+			MsgType(larkim.MsgTypeInteractive).
+			Content(cardJSON).
+			Build()).
+		Build()
+	var resp *larkim.CreateMessageResp
+	if err := p.withTransientRetry(ctx, "send extra card", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "send extra card", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			var err error
+			resp, err = client.Im.Message.Create(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: send extra card: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: send extra card code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			return nil
+		})
+	}); err != nil {
+		return "", err
+	}
+	if resp.Data == nil || resp.Data.MessageId == nil {
+		return "", fmt.Errorf("%s: send extra card: no message ID returned", p.tag())
+	}
+	return *resp.Data.MessageId, nil
+}
+
+func (p *Platform) deleteSingleCard(ctx context.Context, messageID string) error {
+	req := larkim.NewDeleteMessageReqBuilder().MessageId(messageID).Build()
+	return p.withTransientRetry(ctx, "delete stale card", func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, "delete stale card", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Delete(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: delete stale card: %w", p.tag(), err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: delete stale card code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
+			}
+			return nil
+		})
+	})
+}
+
+// uploadAttachmentsFromPayload uploads the full body of every tool_result
+// entry whose body exceeds the shard attach threshold as a .txt file to the
+// same chat, so users can retrieve the complete output the card abbreviated.
+// The threshold mirrors attachThreshold used by shardLargeEntry so renderer
+// and uploader agree on which entries require file backup.
+func (p *Platform) uploadAttachmentsFromPayload(ctx context.Context, chatID string, payload *core.ProgressCardPayload) {
+	if payload == nil {
+		return
+	}
+	rctx := replyContext{chatID: chatID}
+	for _, it := range selectAttachablePayloadEntries(payload, attachUploadThreshold) {
+		filename := fmt.Sprintf("%s-%s.txt", strings.ToLower(it.Tool), it.ID)
+		att := core.FileAttachment{
+			MimeType: "text/plain",
+			FileName: filename,
+			Data:     []byte(it.Text),
+		}
+		if err := p.SendFile(ctx, rctx, att); err != nil {
+			slog.Warn(p.tag()+": attach upload failed", "chat", chatID, "tool", it.Tool, "err", err)
+		}
+	}
+}
+
+// selectAttachablePayloadEntries returns every tool_result entry in payload
+// whose body exceeds threshold runes. Pure function so the selection logic
+// can be tested without the Feishu SDK.
+func selectAttachablePayloadEntries(payload *core.ProgressCardPayload, threshold int) []core.ProgressCardEntry {
+	if payload == nil {
+		return nil
+	}
+	var out []core.ProgressCardEntry
+	for _, it := range payload.Items {
+		if it.Kind != core.ProgressEntryToolResult {
+			continue
+		}
+		if utf8.RuneCountInString(it.Text) <= threshold {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// attachUploadThreshold is the rune-count boundary above which
+// uploadAttachmentsFromPayload treats a tool_result body as requiring a file
+// backup. Kept in sync with the attachThreshold used inside
+// buildProgressCardElements so the renderer and the uploader agree.
+const attachUploadThreshold = 28_000
 
 func (p *Platform) Stop() error {
 	if p.cancel != nil {
@@ -3179,21 +3376,12 @@ func (p *Platform) DeletePreviewMessage(ctx context.Context, previewHandle any) 
 		return fmt.Errorf("%s: invalid preview handle type %T", p.tag(), previewHandle)
 	}
 
-	req := larkim.NewDeleteMessageReqBuilder().
-		MessageId(h.messageID).
-		Build()
-	return p.withTransientRetry(ctx, "delete preview message", func() error {
-		return p.withFreshTenantAccessTokenRetry(ctx, "delete preview message", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
-			resp, err := client.Im.Message.Delete(ctx, req, options...)
-			if err != nil {
-				return fmt.Errorf("%s: delete preview message: %w", p.tag(), err)
-			}
-			if !resp.Success() {
-				return fmt.Errorf("%s: delete preview message code=%d msg=%s", p.tag(), resp.Code, resp.Msg)
-			}
-			return nil
-		})
-	})
+	for _, id := range h.messageIDs {
+		if err := p.deleteSingleCard(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SendAudio uploads audio bytes to Feishu and sends a voice message.
@@ -3384,7 +3572,7 @@ func pairToolEntries(items []core.ProgressCardEntry) []pairedEntry {
 		switch it.Kind {
 		case core.ProgressEntryToolResult:
 			if it.ID != "" {
-				if k, ok := idx[it.ID]; ok {
+				if k, ok := idx[it.ID]; ok && it.PartIdx <= 1 {
 					cpy := it
 					out[k].Result = &cpy
 					continue
@@ -3392,10 +3580,7 @@ func pairToolEntries(items []core.ProgressCardEntry) []pairedEntry {
 			}
 			synth := it
 			synth.Kind = core.ProgressEntryToolUse
-			out = append(out, pairedEntry{Use: synth, Result: nil})
-			if synth.ID != "" {
-				idx[synth.ID] = len(out) - 1
-			}
+			out = append(out, pairedEntry{Use: synth, Result: &it})
 		case core.ProgressEntryToolUse:
 			out = append(out, pairedEntry{Use: it})
 			if it.ID != "" {

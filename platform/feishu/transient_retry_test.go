@@ -409,7 +409,7 @@ func TestPatchMessageRetriesOnTransientError(t *testing.T) {
 		),
 	}
 
-	err := p.UpdateMessage(context.Background(), &feishuPreviewHandle{messageID: "om_card_1", chatID: "oc_chat"}, "updated content")
+	err := p.UpdateMessage(context.Background(), &feishuPreviewHandle{messageIDs: []string{"om_card_1"}, chatID: "oc_chat"}, "updated content")
 	if err != nil {
 		t.Fatalf("UpdateMessage() error = %v", err)
 	}
