@@ -2116,10 +2116,6 @@ func (e *Engine) processInteractiveMessage(p Platform, msg *Message, session *Se
 // and workspaceDir so that multi-workspace mode can route to per-workspace agents.
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY in the agent env; otherwise interactiveKey is used.
 func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session *Session, agent Agent, sessions *SessionManager, interactiveKey string, workspaceDir string, ccSessionKey string) {
-	// session.Unlock() is NOT deferred here — it is called explicitly in
-	// the drain loop below while holding state.mu to close the race window
-	// between "queue is empty" and "session unlocked". A deferred fallback
-	// ensures the lock is released on early-return paths.
 	unlocked := false
 	defer func() {
 		if !unlocked {
@@ -2217,24 +2213,46 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	// Run Send concurrently with processInteractiveEvents. Some agents block inside
 	// Send until the prompt turn finishes (e.g. ACP session/prompt); they may emit
 	// EventPermissionRequest while blocked — the event loop must run in parallel.
+
+	// Flush any messages that arrived during the agent-spawn window into
+	// the current turn, in FIFO order, after the turn-originator's first
+	// Send. All Sends serialize on the agent session's stdinMu.
+	state.mu.Lock()
+	queued := state.pendingMessages
+	state.pendingMessages = nil
+	state.mu.Unlock()
+
 	sendDone := make(chan error, 1)
 	go func() {
-		sendDone <- state.agentSession.Send(promptContent, msg.Images, msg.Files)
+		// First: the turn originator.
+		if err := state.agentSession.Send(promptContent, msg.Images, msg.Files); err != nil {
+			sendDone <- err
+			return
+		}
+		// Then: any startup-queued messages, in order.
+		for _, q := range queued {
+			qPrompt := e.buildSenderPrompt(q.content, q.userID, q.userName, q.msgPlatform, q.msgSessionKey)
+			if err := state.agentSession.Send(qPrompt, q.images, q.files); err != nil {
+				sendDone <- err
+				return
+			}
+		}
+		sendDone <- nil
 	}()
+
+	// Flip the flag AFTER the first Send goroutine is launched so that
+	// subsequent mid-stream messages go through direct inject. Ordering
+	// is preserved by stdinMu in the agent session: first-Send always
+	// wins the mutex before any concurrent inject.
+	state.mu.Lock()
+	state.readyForInject = true
+	state.mu.Unlock()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx)
 	if elapsed := time.Since(sendStart); elapsed >= slowAgentSend {
 		slog.Warn("slow agent send", "elapsed", elapsed, "session", msg.SessionKey, "content_len", len(msg.Content))
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
-
-	// Guard against a narrow race: a message may have been queued between
-	// processInteractiveEvents observing an empty queue and returning here
-	// (session is still locked, so handleMessage's TryLock fails and routes
-	// the message to queueMessageForBusySession). Drain any such orphans.
-	if e.drainPendingMessages(state, session, sessions, interactiveKey) {
-		unlocked = true
-	}
 }
 
 // getOrCreateWorkspaceAgent returns (or creates) a per-workspace agent and session manager.
@@ -3156,87 +3174,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					return
 				}
 			}
-
-			// Check for queued messages — if present, continue the event loop
-			// for the next turn instead of returning.
-			state.mu.Lock()
-			if len(state.pendingMessages) > 0 {
-				queued := state.pendingMessages[0]
-				state.pendingMessages = state.pendingMessages[1:]
-				remainingQueue := len(state.pendingMessages)
-				state.platform = queued.platform
-				state.replyCtx = queued.replyCtx
-				state.fromVoice = queued.fromVoice
-				state.mu.Unlock()
-
-				// Stop the previous turn's typing indicator
-				if stopTyping != nil {
-					stopTyping()
-					stopTyping = nil
-				}
-				// Start a new typing indicator for the queued message's context
-				if ti, ok := queued.platform.(TypingIndicator); ok {
-					stopTyping = ti.StartTyping(e.ctx, queued.replyCtx)
-				}
-				// Agent continues working — don't add done reaction for this turn.
-				doneReaction = nil
-
-				// Drain stale events before starting the next turn. Between
-				// EventResult and Send(), the only buffered events would be
-				// stale leftovers (e.g. a deferred EventError from cmd.Wait()).
-				drainEvents(state.agentSession.Events())
-
-				if pendingSend != nil {
-					if err := <-pendingSend; err != nil {
-						slog.Debug("async send error before queued turn", "error", err)
-					}
-				}
-
-				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey)
-
-				nextSend := make(chan error, 1)
-				go func() {
-					nextSend <- state.agentSession.Send(queuedPrompt, queued.images, queued.files)
-				}()
-				pendingSend = nextSend
-
-				// Detect language now (deferred from queue time to avoid
-				// flipping locale while the previous turn is still running).
-				e.i18n.DetectAndSet(queued.content)
-
-				// Reset per-turn state for the next turn
-				textParts = nil
-				segmentStart = 0
-				toolCount = 0
-				turnStart = time.Now()
-				firstEventLogged = false
-				waitStart = time.Now()
-				queuedRenderer := func(content string) string {
-					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
-				}
-				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
-				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
-				panelTracker = newToolPanelTracker()
-
-				session.AddHistory("user", queued.content)
-
-				if idleTimer != nil {
-					if !idleTimer.Stop() {
-						select {
-						case <-idleTimer.C:
-						default:
-						}
-					}
-					idleTimer.Reset(e.eventIdleTimeout)
-				}
-
-				slog.Info("processing queued message",
-					"session", sessionKey,
-					"remaining_queue", remainingQueue,
-				)
-				continue
-			}
-			state.mu.Unlock()
 
 			if pendingSend != nil {
 				if err := <-pendingSend; err != nil {
