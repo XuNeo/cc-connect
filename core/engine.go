@@ -1645,37 +1645,56 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	session := sessions.GetOrCreateActive(msg.SessionKey)
 	sessions.UpdateUserMeta(msg.SessionKey, msg.UserName, msg.ChatName)
 	if !session.TryLock() {
-		// Check for /btw — inject into the running session mid-turn
+		e.interactiveMu.Lock()
+		state, hasState := e.interactiveStates[interactiveKey]
+		e.interactiveMu.Unlock()
+
+		// /btw command: keep the user-facing ack for backwards compatibility,
+		// but route the injection through the normal path below.
 		trimmed := strings.TrimSpace(content)
-		if isBtwCommand(trimmed) {
+		isBtw := isBtwCommand(trimmed)
+		if isBtw {
 			btw := strings.TrimSpace(trimmed[len(matchBtwPrefix(trimmed)):])
-			if btw != "" {
-				e.interactiveMu.Lock()
-				state, ok := e.interactiveStates[interactiveKey]
-				e.interactiveMu.Unlock()
-				if ok && state.agentSession != nil && state.agentSession.Alive() {
-					if err := state.agentSession.Send(btw, nil, nil); err != nil {
-						slog.Error("btw: send failed", "error", err)
-						e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSendFailed))
-					} else {
-						e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSent))
-					}
-					return
-				}
+			if btw == "" {
+				return
 			}
+			// Rewrite message content: /btw prefix stripped before injection.
+			msg.Content = btw
+			content = btw
 		}
-		// Session is busy — try to queue the message for the running turn
-		// so the agent processes it immediately after the current turn ends.
+
+		// Running state: agent alive and turn owner has initiated its first
+		// Send — inject directly to stdin. The CLI folds the new message into
+		// the current turn (verified 2026-04-25).
+		if hasState && state != nil &&
+			state.agentSession != nil && state.agentSession.Alive() &&
+			state.readyForInject {
+			prompt := e.buildSenderPrompt(msg.Content, msg.UserID, msg.UserName, msg.Platform, msg.SessionKey)
+			if err := state.agentSession.Send(prompt, msg.Images, msg.Files); err != nil {
+				slog.Error("mid-stream inject: send failed", "error", err, "session", msg.SessionKey)
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSendFailed))
+				return
+			}
+			if isBtw {
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSent))
+			}
+			// No ack reply for ordinary messages — the agent's response
+			// covers the injected content within the current turn.
+			return
+		}
+
+		// Starting state: agent not yet spawned or first Send not initiated.
+		// Queue for the turn owner to flush after first Send.
 		if e.queueMessageForBusySession(p, msg, interactiveKey) {
-			// Race guard: the drain loop in processInteractiveMessageWith may
-			// have just finished (session unlocked) between our TryLock failure
-			// and the queue append. Re-try TryLock — if it succeeds, no one is
-			// draining the queue so we must start a processor ourselves.
+			// Orphan race: turn-owner goroutine may have exited between our
+			// TryLock failure and this queue append. Claim the lock if possible
+			// and drain the queue ourselves.
 			if session.TryLock() {
 				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, resolvedWorkspace)
 			}
 			return
 		}
+
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPreviousProcessing))
 		return
 	}
