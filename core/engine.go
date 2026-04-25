@@ -25,7 +25,10 @@ import (
 
 const maxPlatformMessageLen = 4000
 const telegramBotCommandLimit = 100
-const maxQueuedMessages = 5 // cap queued messages to bound memory usage
+// maxStartupQueue caps messages accumulated while the agent process is
+// being spawned. In practice, spawn takes seconds and real usage produces
+// 1-3 queued messages; the cap exists purely as a defensive bound.
+const maxStartupQueue = 100
 
 const (
 	defaultThinkingMaxLen = 0
@@ -1769,7 +1772,7 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	// EventResult that never arrives. Instead, the event loop sends the
 	// message after the current turn's EventResult is received.
 	state.mu.Lock()
-	if len(state.pendingMessages) >= maxQueuedMessages {
+	if len(state.pendingMessages) >= maxStartupQueue {
 		state.mu.Unlock()
 		return false // fall back to "previous processing" reply
 	}
