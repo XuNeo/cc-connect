@@ -289,6 +289,12 @@ type interactiveState struct {
 	stopped                bool
 	pending                *pendingPermission
 	pendingMessages        []queuedMessage // messages queued while session was busy
+	// readyForInject becomes true once the turn owner has sent its first
+	// message to the live agent. While false, incoming messages are appended
+	// to pendingMessages (used during agent spawn). Once true, handleMessage
+	// delivers messages directly to agentSession.Send() mid-stream instead
+	// of queueing — the CLI folds them into the current turn.
+	readyForInject bool
 	approveAll             bool            // when true, auto-approve all permission requests for this session
 	chatID                 string          // chat/group ID from Message.ChatID for per-session settings lookup
 	fromVoice              bool            // true if current turn originated from voice transcription
