@@ -6586,10 +6586,10 @@ func TestQueueMessageOverflow_DropsOldestAndReturnsfalse(t *testing.T) {
 	}
 	state.mu.Unlock()
 
-	// Platform should have received the MsgMessageQueued replies for the 5 accepted + nothing for rejected.
+	// No user-facing replies are sent for queued messages (ack was dropped with MsgMessageQueued).
 	sent := p.getSent()
-	if len(sent) != maxStartupQueue {
-		t.Fatalf("platform replies = %d, want %d (one per accepted queue)", len(sent), maxStartupQueue)
+	if len(sent) != 0 {
+		t.Fatalf("platform replies = %d, want 0 (no ack for queued messages)", len(sent))
 	}
 }
 
