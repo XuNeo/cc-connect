@@ -1785,11 +1785,11 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		return false
 	}
 
-	// Only queue metadata — do NOT send to agent stdin yet.
-	// The agent CLI may treat a mid-turn stdin message as part of the
-	// current turn, causing the event loop to hang waiting for a second
-	// EventResult that never arrives. Instead, the event loop sends the
-	// message after the current turn's EventResult is received.
+	// Only reached during the agent-spawn window (state.readyForInject==false).
+	// Messages accumulate here and are flushed into the current turn by
+	// processInteractiveMessageWith together with the turn originator's
+	// first Send. Once readyForInject flips true, handleMessage bypasses
+	// this queue and delivers mid-stream messages via direct Send().
 	state.mu.Lock()
 	if len(state.pendingMessages) >= maxStartupQueue {
 		state.mu.Unlock()
