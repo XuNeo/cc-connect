@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Mid-stream message injection**: messages sent while the agent is actively processing a turn are now injected directly into that turn via the agent session's stdin, matching terminal Claude Code behavior. Previously such messages were queued and replayed as separate turns after the current turn completed. The prior code comment claiming the CLI would hang on mid-turn stdin was wrong (verified experimentally 2026-04-25). `/btw` is preserved for backwards compatibility; its ack reply is unchanged.
 - **Feishu progress card redesigned**: each tool call and thinking block is now its own `collapsible_panel`. The single running tool and the latest thinking stay expanded; failed tools stay expanded; everything else defaults collapsed.
 
 ### Added
