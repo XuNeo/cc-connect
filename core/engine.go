@@ -1675,6 +1675,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSendFailed))
 				return
 			}
+			session.AddHistory("user", msg.Content)
 			if isBtw {
 				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSent))
 			}
@@ -2225,27 +2226,37 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	go func() {
 		// First: the turn originator.
 		if err := state.agentSession.Send(promptContent, msg.Images, msg.Files); err != nil {
+			// Notify senders of queued messages that got dropped because the
+			// turn-originator's first Send never made it to the CLI.
+			for _, q := range queued {
+				e.send(q.platform, q.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+			}
 			sendDone <- err
 			return
 		}
+
+		// Flip readyForInject AFTER first Send succeeded. This ordering is
+		// critical: subsequent handleMessage direct-inject callers compete
+		// for stdinMu; flipping before first-Send acquires stdinMu could
+		// let an injected message reach the CLI before the turn-originator.
+		state.mu.Lock()
+		state.readyForInject = true
+		state.mu.Unlock()
+
 		// Then: any startup-queued messages, in order.
-		for _, q := range queued {
+		for i, q := range queued {
 			qPrompt := e.buildSenderPrompt(q.content, q.userID, q.userName, q.msgPlatform, q.msgSessionKey)
 			if err := state.agentSession.Send(qPrompt, q.images, q.files); err != nil {
+				// Notify senders of still-undrained queued messages.
+				for _, remaining := range queued[i:] {
+					e.send(remaining.platform, remaining.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+				}
 				sendDone <- err
 				return
 			}
 		}
 		sendDone <- nil
 	}()
-
-	// Flip the flag AFTER the first Send goroutine is launched so that
-	// subsequent mid-stream messages go through direct inject. Ordering
-	// is preserved by stdinMu in the agent session: first-Send always
-	// wins the mutex before any concurrent inject.
-	state.mu.Lock()
-	state.readyForInject = true
-	state.mu.Unlock()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx)
 	if elapsed := time.Since(sendStart); elapsed >= slowAgentSend {
@@ -3187,6 +3198,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				doneReaction = func() { doneTI.AddDoneReaction(replyCtx) }
 			}
 
+			state.mu.Lock()
+			state.readyForInject = false
+			state.mu.Unlock()
+
 			return
 
 		case EventError:
@@ -3208,6 +3223,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if state.agentSession == nil || !state.agentSession.Alive() {
 				e.notifyDroppedQueuedMessages(state, event.Error)
 			}
+
+			state.mu.Lock()
+			state.readyForInject = false
+			state.mu.Unlock()
+
 			return
 		}
 	}
@@ -3216,6 +3236,11 @@ channelClosed:
 	// Channel closed - process exited unexpectedly
 	slog.Warn("agent process exited", "session_key", sessionKey)
 	e.notifyDroppedQueuedMessages(state, fmt.Errorf("agent process exited"))
+
+	state.mu.Lock()
+	state.readyForInject = false
+	state.mu.Unlock()
+
 	e.cleanupInteractiveState(sessionKey, state)
 
 	if len(textParts) > 0 {
