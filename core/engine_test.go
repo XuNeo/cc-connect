@@ -49,9 +49,11 @@ func (s *recordingAgentSession) RespondPermission(id string, res PermissionResul
 }
 
 type stubPlatformEngine struct {
-	n    string
-	sent []string
-	mu   sync.Mutex
+	n             string
+	sent          []string
+	mu            sync.Mutex
+	typingStarted int // incremented by StartTyping; guarded by mu
+	typingStopped int // incremented when stop fn is called; guarded by mu
 }
 
 func (p *stubPlatformEngine) Name() string               { return p.n }
@@ -69,6 +71,18 @@ func (p *stubPlatformEngine) Send(_ context.Context, _ any, content string) erro
 	return nil
 }
 func (p *stubPlatformEngine) Stop() error { return nil }
+
+// StartTyping implements TypingIndicator; records calls and returns a no-op stop fn.
+func (p *stubPlatformEngine) StartTyping(_ context.Context, _ any) func() {
+	p.mu.Lock()
+	p.typingStarted++
+	p.mu.Unlock()
+	return func() {
+		p.mu.Lock()
+		p.typingStopped++
+		p.mu.Unlock()
+	}
+}
 
 func (p *stubPlatformEngine) getSent() []string {
 	p.mu.Lock()
@@ -11048,5 +11062,60 @@ func TestHandleMessage_ReadyForInject_CallsSendDirectly(t *testing.T) {
 	state.mu.Unlock()
 	if gotReplyCtx != "ctx-turn1" {
 		t.Fatalf("state.replyCtx = %v, want ctx-turn1 (injected msg must not rebind)", gotReplyCtx)
+	}
+}
+
+func TestHandleMessage_InjectedMessage_RegistersAck(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newQueuingSession("qs-inject-ack")
+	agent := &controllableAgent{nextSession: sess}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:user1"
+
+	session := e.sessions.GetOrCreateActive(key)
+	if !session.TryLock() {
+		t.Fatal("lock")
+	}
+	defer session.Unlock()
+
+	state := &interactiveState{
+		agentSession:   sess,
+		platform:       p,
+		replyCtx:       "ctx-turn1",
+		readyForInject: true,
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	msg := &Message{
+		Platform:   "test",
+		SessionKey: key,
+		Content:    "mid-turn",
+		ReplyCtx:   "ctx-inject",
+	}
+	e.ReceiveMessage(p, msg)
+
+	state.mu.Lock()
+	acks := append([]injectedAck(nil), state.injectedAcks...)
+	state.mu.Unlock()
+
+	if len(acks) != 1 {
+		t.Fatalf("injectedAcks len = %d, want 1", len(acks))
+	}
+	if acks[0].replyCtx != "ctx-inject" {
+		t.Fatalf("acks[0].replyCtx = %v, want ctx-inject", acks[0].replyCtx)
+	}
+	// stubPlatformEngine implements TypingIndicator, so stopTyping must be non-nil.
+	if acks[0].stopTyping == nil {
+		t.Fatal("acks[0].stopTyping is nil, want non-nil (stubPlatformEngine implements TypingIndicator)")
+	}
+	// StartTyping must have been called once.
+	p.mu.Lock()
+	started := p.typingStarted
+	p.mu.Unlock()
+	if started != 1 {
+		t.Fatalf("typingStarted = %d, want 1", started)
 	}
 }

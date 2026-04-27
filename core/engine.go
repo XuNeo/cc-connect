@@ -264,6 +264,15 @@ type workspaceInitFlow struct {
 	channelName string
 }
 
+// injectedAck is the handle the turn-terminating event loop needs to close
+// the typing indicator and add the done-reaction for a mid-stream injected
+// message.
+type injectedAck struct {
+	platform   Platform
+	replyCtx   any
+	stopTyping func() // nil if platform doesn't implement TypingIndicator
+}
+
 // queuedMessage holds a message that arrived while the session was busy.
 // The message is NOT sent to agent stdin at queue time; the event loop
 // sends it after the current turn completes to avoid mid-turn interference.
@@ -298,6 +307,12 @@ type interactiveState struct {
 	// delivers messages directly to agentSession.Send() mid-stream instead
 	// of queueing — the CLI folds them into the current turn.
 	readyForInject bool
+	// injectedAcks tracks typing-stop funcs and replyCtxs for messages that
+	// were injected mid-turn via handleMessage's direct-Send path. Drained
+	// when the turn ends (EventResult / EventError / channelClosed) so each
+	// injected message gets the same typing→done lifecycle as the turn
+	// originator. Protected by state.mu.
+	injectedAcks []injectedAck
 	approveAll             bool            // when true, auto-approve all permission requests for this session
 	chatID                 string          // chat/group ID from Message.ChatID for per-session settings lookup
 	fromVoice              bool            // true if current turn originated from voice transcription
@@ -1676,11 +1691,41 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 				return
 			}
 			session.AddHistory("user", msg.Content)
+
+			// Start typing indicator for this injected message so the user gets
+			// immediate visual ack (mirrors the turn-originator's experience).
+			// The stop fn + replyCtx are registered on the state; the event loop
+			// calls them at turn end to stop typing and add the done-reaction.
+			var stopFn func()
+			if ti, ok := p.(TypingIndicator); ok {
+				stopFn = ti.StartTyping(e.ctx, msg.ReplyCtx)
+			}
+			state.mu.Lock()
+			if state.readyForInject {
+				state.injectedAcks = append(state.injectedAcks, injectedAck{
+					platform:   p,
+					replyCtx:   msg.ReplyCtx,
+					stopTyping: stopFn,
+				})
+			} else {
+				// Turn ended between the Alive/readyForInject check and now.
+				// Stop typing immediately so we don't leak the goroutine.
+				state.mu.Unlock()
+				if stopFn != nil {
+					stopFn()
+				}
+				// No done-reaction — the turn is over; the event loop already
+				// ran its cleanup path. The inject's Send still succeeded
+				// (already landed in stdin), so this is a cosmetic-only skip.
+				state.mu.Lock()
+			}
+			state.mu.Unlock()
+
 			if isBtw {
 				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBtwSent))
 			}
-			// No ack reply for ordinary messages — the agent's response
-			// covers the injected content within the current turn.
+			// No text ack reply for ordinary messages — the typing indicator
+			// started above and the agent's eventual response cover the ack.
 			return
 		}
 
@@ -3200,7 +3245,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			state.mu.Lock()
 			state.readyForInject = false
+			injected := state.injectedAcks
+			state.injectedAcks = nil
 			state.mu.Unlock()
+
+			for _, ack := range injected {
+				if ack.stopTyping != nil {
+					ack.stopTyping()
+				}
+				if doneTI, ok := ack.platform.(TypingIndicatorDone); ok {
+					doneTI.AddDoneReaction(ack.replyCtx)
+				}
+			}
 
 			return
 
@@ -3226,7 +3282,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			state.mu.Lock()
 			state.readyForInject = false
+			injected := state.injectedAcks
+			state.injectedAcks = nil
 			state.mu.Unlock()
+
+			for _, ack := range injected {
+				if ack.stopTyping != nil {
+					ack.stopTyping()
+				}
+				if doneTI, ok := ack.platform.(TypingIndicatorDone); ok {
+					doneTI.AddDoneReaction(ack.replyCtx)
+				}
+			}
 
 			return
 		}
@@ -3239,7 +3306,18 @@ channelClosed:
 
 	state.mu.Lock()
 	state.readyForInject = false
+	injected := state.injectedAcks
+	state.injectedAcks = nil
 	state.mu.Unlock()
+
+	for _, ack := range injected {
+		if ack.stopTyping != nil {
+			ack.stopTyping()
+		}
+		if doneTI, ok := ack.platform.(TypingIndicatorDone); ok {
+			doneTI.AddDoneReaction(ack.replyCtx)
+		}
+	}
 
 	e.cleanupInteractiveState(sessionKey, state)
 
