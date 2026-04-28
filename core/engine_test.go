@@ -4808,20 +4808,55 @@ func TestBuildAskQuestionResponse(t *testing.T) {
 	input := map[string]any{
 		"questions": []any{map[string]any{"question": "Which?"}},
 	}
+	qs := testQuestions() // single question: "Which database?"
 	collected := map[int]string{0: "PostgreSQL", 1: "Gin"}
-	result := buildAskQuestionResponse(input, testQuestions(), collected)
+	result := buildAskQuestionResponse(input, qs, collected)
 	answers, ok := result["answers"].(map[string]any)
 	if !ok {
 		t.Fatal("expected answers map")
 	}
-	if answers["0"] != "PostgreSQL" {
-		t.Errorf("expected answer[0]=PostgreSQL, got %v", answers["0"])
+	if answers[qs[0].Question] != "PostgreSQL" {
+		t.Errorf("expected answer[%q]=PostgreSQL, got %v", qs[0].Question, answers[qs[0].Question])
 	}
-	if answers["1"] != "Gin" {
-		t.Errorf("expected answer[1]=Gin, got %v", answers["1"])
+	if _, present := answers["1"]; present {
+		t.Errorf("expected out-of-range collected[1] to be dropped, got %v", answers["1"])
+	}
+	if len(answers) != 1 {
+		t.Errorf("expected exactly 1 answer (out-of-range dropped), got %d: %#v", len(answers), answers)
 	}
 	if _, ok := result["questions"]; !ok {
 		t.Error("expected original questions to be preserved")
+	}
+}
+
+// TestBuildAskQuestionResponse_MatchesClaudeCodeLookup locks in the contract
+// Claude Code CLI uses to read answers back: it looks up answers[q.Question],
+// NOT answers[strconv.Itoa(index)]. A question whose text key is missing
+// is filtered out as unanswered, which caused the "Panel 没收到回复" bug.
+// See docs/superpowers/plans/2026-04-29-askq-answer-key-fix.md.
+func TestBuildAskQuestionResponse_MatchesClaudeCodeLookup(t *testing.T) {
+	qs := testMultiQuestions() // 2 questions: "Which database?", "Which framework?"
+	collected := map[int]string{0: "PostgreSQL", 1: "Gin"}
+
+	result := buildAskQuestionResponse(map[string]any{}, qs, collected)
+	answers, ok := result["answers"].(map[string]any)
+	if !ok {
+		t.Fatal("expected answers map in updatedInput")
+	}
+
+	// Replay the CLI's lookup: for each question, answers[q.Question] must
+	// resolve to the collected answer. If any lookup misses, the CLI treats
+	// that question as unanswered and the AI sees an empty tool_result.
+	for idx, q := range qs {
+		got, present := answers[q.Question]
+		if !present {
+			t.Errorf("answers[%q] missing — CLI would treat question %d as unanswered", q.Question, idx)
+			continue
+		}
+		want := collected[idx]
+		if got != want {
+			t.Errorf("answers[%q] = %v, want %v", q.Question, got, want)
+		}
 	}
 }
 
@@ -4928,8 +4963,8 @@ func TestHandlePendingPermission_AskUserQuestion_SingleQuestion(t *testing.T) {
 	if !ok {
 		t.Fatal("expected answers in updatedInput")
 	}
-	if answers["0"] != "SQLite" {
-		t.Errorf("expected answer=SQLite, got %v", answers["0"])
+	if answers["Which database?"] != "SQLite" {
+		t.Errorf("expected answer=SQLite, got %v", answers["Which database?"])
 	}
 
 	state.mu.Lock()
@@ -5000,11 +5035,11 @@ func TestHandlePendingPermission_AskUserQuestion_MultiQuestion_Sequential(t *tes
 	if !ok {
 		t.Fatal("expected answers in updatedInput")
 	}
-	if answers["0"] != "PostgreSQL" {
-		t.Errorf("expected answer[0]=PostgreSQL, got %v", answers["0"])
+	if answers["Which database?"] != "PostgreSQL" {
+		t.Errorf("expected answer[%q]=PostgreSQL, got %v", "Which database?", answers["Which database?"])
 	}
-	if answers["1"] != "Echo" {
-		t.Errorf("expected answer[1]=Echo, got %v", answers["1"])
+	if answers["Which framework?"] != "Echo" {
+		t.Errorf("expected answer[%q]=Echo, got %v", "Which framework?", answers["Which framework?"])
 	}
 
 	state.mu.Lock()
@@ -5052,8 +5087,8 @@ func TestHandlePendingPermission_AskUserQuestion_SkipsPermFlow(t *testing.T) {
 	if !ok {
 		t.Fatal("expected answers in updatedInput")
 	}
-	if answers["0"] != "allow" {
-		t.Errorf("expected free text 'allow' as answer, got %v", answers["0"])
+	if answers["Which database?"] != "allow" {
+		t.Errorf("expected free text 'allow' as answer, got %v", answers["Which database?"])
 	}
 }
 

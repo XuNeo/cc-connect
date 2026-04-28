@@ -2105,6 +2105,11 @@ func (e *Engine) resolveAskQuestionAnswer(q UserQuestion, input string) string {
 }
 
 // buildAskQuestionResponse constructs the updatedInput for AskUserQuestion control_response.
+// Claude Code CLI keys the answers map by the question text (see the tool's
+// output schema: "question text -> answer string"). Keying by index silently
+// breaks: the CLI's tool_result renderer does answers[q.Question] and drops
+// any question it can't resolve, so the AI sees an empty tool_result and
+// reprompts the user.
 func buildAskQuestionResponse(originalInput map[string]any, questions []UserQuestion, collected map[int]string) map[string]any {
 	result := make(map[string]any)
 	for k, v := range originalInput {
@@ -2112,7 +2117,10 @@ func buildAskQuestionResponse(originalInput map[string]any, questions []UserQues
 	}
 	answers := make(map[string]any)
 	for idx, ans := range collected {
-		answers[strconv.Itoa(idx)] = ans
+		if idx < 0 || idx >= len(questions) {
+			continue
+		}
+		answers[questions[idx].Question] = ans
 	}
 	result["answers"] = answers
 	return result
