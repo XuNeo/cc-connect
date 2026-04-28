@@ -438,6 +438,8 @@ func (w *compactProgressWriter) recordFailure(op string, err error) bool {
 			"platform", w.platform.Name(), "style", w.style, "op", op, "error", err)
 		return false
 	case writerErrTransient:
+		// consecutiveFailures was post-incremented above, so on the Nth
+		// failure this compares N >= max — the Nth failure disables.
 		if w.consecutiveFailures >= writerMaxConsecutiveFailures {
 			w.disabled = true
 			slog.Warn("progress writer: disabled after consecutive failures",
@@ -526,7 +528,8 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		if w.usePayload {
 			w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
 			if w.content == "" {
-				slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
+				slog.Warn("progress writer: payload build failed, disabling",
+					"platform", w.platform.Name(), "style", w.style, "op", "BuildPayload")
 				w.disabled = true
 				return false
 			}
