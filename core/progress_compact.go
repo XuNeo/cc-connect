@@ -67,6 +67,14 @@ func classifyWriterError(err error) writerErrKind {
 	return writerErrTransient
 }
 
+// permanentWriterError is a permanent error manufactured by the writer itself
+// (not from an upstream platform call) to flow non-retryable internal failures
+// through the same recordFailure → "degraded to legacy" code path.
+type permanentWriterError struct{ reason string }
+
+func (e *permanentWriterError) Error() string     { return e.reason }
+func (e *permanentWriterError) IsPermanent() bool { return true }
+
 type ProgressCardState string
 
 const (
@@ -532,9 +540,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		if w.usePayload {
 			w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
 			if w.content == "" {
-				slog.Warn("progress writer: payload build failed, disabling",
-					"platform", w.platform.Name(), "style", w.style, "op", "BuildPayload")
-				w.disabled = true
+				w.recordFailure("BuildPayload", &permanentWriterError{reason: "progress writer: payload build failed"})
 				return false
 			}
 		} else {
