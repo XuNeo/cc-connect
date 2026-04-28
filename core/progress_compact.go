@@ -454,6 +454,7 @@ func (w *compactProgressWriter) recordFailure(op string, err error) bool {
 
 	slog.Warn("progress writer: transient error, dropping frame",
 		"platform", w.platform.Name(), "style", w.style, "op", op,
+		"reason", "transient_below_threshold",
 		"consecutive", w.consecutiveFailures, "error", err)
 	return true
 }
