@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -25,6 +26,36 @@ const (
 	// does not block the whole turn forever.
 	compactProgressAPITimeout = 15 * time.Second
 )
+
+// writerErrKind classifies a Feishu/platform error from the writer's point of
+// view. Platforms optionally implement PermanentProgressError to mark known
+// non-recoverable errors; everything else is transient and drop-framed.
+type writerErrKind int
+
+const (
+	writerErrNone writerErrKind = iota
+	writerErrTransient
+	writerErrPermanent
+)
+
+// PermanentProgressError lets platform code flag errors that should *not* be
+// retried — e.g. Feishu 230011 "message withdrawn" (target gone forever).
+// Anything that doesn't implement it is treated as transient.
+type PermanentProgressError interface {
+	error
+	IsPermanent() bool
+}
+
+func classifyWriterError(err error) writerErrKind {
+	if err == nil {
+		return writerErrNone
+	}
+	var pe PermanentProgressError
+	if errors.As(err, &pe) && pe.IsPermanent() {
+		return writerErrPermanent
+	}
+	return writerErrTransient
+}
 
 type ProgressCardState string
 
