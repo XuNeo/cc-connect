@@ -431,27 +431,30 @@ func (w *compactProgressWriter) recordFailure(op string, err error) bool {
 	w.lastFailureAt = now
 	w.consecutiveFailures++
 
+	disableReason := ""
 	switch kind {
 	case writerErrPermanent:
-		w.disabled = true
-		slog.Warn("progress writer: permanent error, disabling",
-			"platform", w.platform.Name(), "style", w.style, "op", op, "error", err)
-		return false
+		disableReason = "permanent_error"
 	case writerErrTransient:
 		// consecutiveFailures was post-incremented above, so on the Nth
 		// failure this compares N >= max — the Nth failure disables.
 		if w.consecutiveFailures >= writerMaxConsecutiveFailures {
-			w.disabled = true
-			slog.Warn("progress writer: disabled after consecutive failures",
-				"platform", w.platform.Name(), "style", w.style, "op", op,
-				"consecutive", w.consecutiveFailures, "error", err)
-			return false
+			disableReason = "consecutive_failures"
 		}
-		slog.Warn("progress writer: transient error, dropping frame",
-			"platform", w.platform.Name(), "style", w.style, "op", op,
-			"consecutive", w.consecutiveFailures, "error", err)
-		return true
 	}
+
+	if disableReason != "" {
+		w.disabled = true
+		slog.Warn("progress writer: degraded to legacy",
+			"platform", w.platform.Name(), "style", w.style,
+			"op", op, "reason", disableReason,
+			"consecutive", w.consecutiveFailures, "error", err)
+		return false
+	}
+
+	slog.Warn("progress writer: transient error, dropping frame",
+		"platform", w.platform.Name(), "style", w.style, "op", op,
+		"consecutive", w.consecutiveFailures, "error", err)
 	return true
 }
 

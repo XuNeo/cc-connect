@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -102,6 +103,43 @@ func TestWriter_PermanentErrorDisablesImmediately(t *testing.T) {
 		t.Fatal("permanent error should disable writer immediately")
 	}
 }
+
+func TestWriter_EmitsSingleDegradeWarnOnDisable(t *testing.T) {
+	var captured []slog.Record
+	h := &captureHandler{records: &captured}
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(h))
+	defer slog.SetDefault(oldLogger)
+
+	p := &permanentFailPlatform{}
+	replyCtx := progressHintReplyCtx{style: progressStyleCard, payload: true}
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, "cc", LangEnglish, nil)
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "init"}, "init")
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "boom"}, "boom")
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "extra"}, "extra")
+
+	seenDegrade := 0
+	for _, r := range captured {
+		if r.Message == "progress writer: degraded to legacy" {
+			seenDegrade++
+		}
+	}
+	if seenDegrade != 1 {
+		t.Fatalf("expected exactly 1 degrade log, got %d", seenDegrade)
+	}
+}
+
+type captureHandler struct {
+	records *[]slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	*h.records = append(*h.records, r)
+	return nil
+}
+func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestWriter_CooldownResetsCounter(t *testing.T) {
 	p := &flakyPlatform{remainingFails: writerMaxConsecutiveFailures - 1}
