@@ -1,7 +1,6 @@
 package feishu
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -23,8 +22,5 @@ func TestFeishuAPIError_PermanentCodes(t *testing.T) {
 		if got != tc.permanent {
 			t.Errorf("code=%d IsPermanent = %v, want %v", tc.code, got, tc.permanent)
 		}
-		// Also verify unwrapping works through fmt.Errorf chain.
-		wrapped := errors.New("x")
-		_ = wrapped
 	}
 }
