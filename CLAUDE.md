@@ -235,3 +235,11 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_cursor`, `no_gemini`,
 6. Optionally implement `AgentDoctorInfo` for `cc-connect doctor` support
 7. Add config example in `config.example.toml`
 8. Add unit tests
+
+## Progress writer invariants
+
+- `compactProgressWriter` MUST NOT disable itself after a single upstream error.
+- Only errors that implement `core.PermanentProgressError` (e.g. Feishu 230011 "message withdrawn") cause immediate disable. Everything else is drop-framed and retried on the next event, with a consecutive-failure threshold as the safety net.
+- When adding a new platform error code: classify transient vs permanent in the platform's error module, do not add it to a whitelist in the writer.
+- When editing `AppendStructured` / `Finalize` failure paths: call `w.recordFailure(op, err)` / `w.recordSuccess()`; never set `w.disabled = true` inline.
+- Tests named `TestWriter_*DoesNotLatch` lock this invariant — keep them green.
