@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,6 +243,12 @@ func TestIsTenantAccessTokenInvalid(t *testing.T) {
 		{name: "code only", err: testError("feishu: reply failed code=99991663 msg=something"), want: true},
 		{name: "message only", err: testError("feishu: reply api call: Invalid access token for authorization"), want: true},
 		{name: "other error", err: testError("feishu: reply failed code=230001 msg=rate limited"), want: false},
+		{name: "typed 99991663", err: fmt.Errorf("patch: %w", &feishuAPIError{Code: 99991663, Msg: "invalid token"}), want: true},
+		{name: "typed 99991664", err: fmt.Errorf("patch: %w", &feishuAPIError{Code: 99991664, Msg: "token expired"}), want: true},
+		{name: "typed 99991668", err: fmt.Errorf("patch: %w", &feishuAPIError{Code: 99991668, Msg: "token revoked"}), want: true},
+		{name: "typed 2200 tenant", err: fmt.Errorf("patch: %w", &feishuAPIError{Code: 2200, Msg: "check app tenant fail"}), want: true},
+		{name: "typed 230020 rate limit (transient, not token)", err: fmt.Errorf("patch: %w", &feishuAPIError{Code: 230020, Msg: "too many requests"}), want: false},
+		{name: "fallback text check app tenant fail", err: testError("feishu: patch message: check app tenant fail"), want: true},
 	}
 
 	for _, tt := range tests {
