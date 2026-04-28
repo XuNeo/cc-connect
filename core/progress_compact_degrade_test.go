@@ -163,3 +163,60 @@ func TestWriter_CooldownResetsCounter(t *testing.T) {
 		t.Fatal("cooldown should have reset consecutiveFailures; writer should not disable")
 	}
 }
+
+// feishuAPIErrorStub mirrors the real *feishuAPIError without importing the
+// feishu package (avoid core→platform import cycle).
+type feishuAPIErrorStub struct {
+	Code int
+	Msg  string
+}
+
+func (e *feishuAPIErrorStub) Error() string { return fmt.Sprintf("feishu: code=%d msg=%s", e.Code, e.Msg) }
+
+// IsPermanent is NOT implemented here — so classifyWriterError treats these as transient.
+// (The real feishu package marks 230011 permanent via its own IsPermanent method.)
+
+type feishuCodePlatform struct {
+	previewCapturePlatform
+	remaining []int // codes to return in order; 0 means success
+}
+
+func (p *feishuCodePlatform) UpdateMessage(_ context.Context, _ any, content string) error {
+	if len(p.remaining) == 0 {
+		p.updated = append(p.updated, content)
+		return nil
+	}
+	code := p.remaining[0]
+	p.remaining = p.remaining[1:]
+	if code == 0 {
+		p.updated = append(p.updated, content)
+		return nil
+	}
+	return fmt.Errorf("patch message: %w", &feishuAPIErrorStub{Code: code, Msg: "stub"})
+}
+
+func TestWriter_FeishuCode2200DoesNotLatch(t *testing.T) {
+	p := &feishuCodePlatform{remaining: []int{2200, 0, 0}}
+	replyCtx := progressHintReplyCtx{style: progressStyleCard, payload: true}
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, "cc", LangEnglish, nil)
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "a"}, "a")
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "b"}, "b") // 2200
+	if w.disabled {
+		t.Fatal("code=2200 must NOT disable the writer (transient tenant error)")
+	}
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "c"}, "c") // 0 = success
+	if len(p.updated) < 1 {
+		t.Fatalf("writer should have recovered; got %d updates", len(p.updated))
+	}
+}
+
+func TestWriter_FeishuCode230099DoesNotLatch(t *testing.T) {
+	p := &feishuCodePlatform{remaining: []int{230099, 0}}
+	replyCtx := progressHintReplyCtx{style: progressStyleCard, payload: true}
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, "cc", LangEnglish, nil)
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "a"}, "a")
+	_ = w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "b"}, "b") // 230099
+	if w.disabled {
+		t.Fatal("code=230099 must NOT disable the writer (transient schema error)")
+	}
+}
