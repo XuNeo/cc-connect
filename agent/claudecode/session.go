@@ -385,7 +385,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "thinking":
 			if thinking, ok := item["thinking"].(string); ok && thinking != "" {
-				evt := core.Event{Type: core.EventThinking, Content: thinking, ParentToolUseID: parentToolUseID}
+				evt := core.Event{Type: core.EventThinking, Content: thinking}
 				select {
 				case cs.events <- evt:
 				case <-cs.ctx.Done():
@@ -394,7 +394,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "text":
 			if text, ok := item["text"].(string); ok && text != "" {
-				evt := core.Event{Type: core.EventText, Content: text, ParentToolUseID: parentToolUseID}
+				evt := core.Event{Type: core.EventText, Content: text}
 				select {
 				case cs.events <- evt:
 				case <-cs.ctx.Done():
