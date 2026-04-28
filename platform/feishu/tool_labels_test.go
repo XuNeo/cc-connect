@@ -59,7 +59,7 @@ func TestPanelStatusEmoji(t *testing.T) {
 }
 
 func TestBuildPanelTitle_AllParts(t *testing.T) {
-	got := buildPanelTitle("ok", "Bash", "ls -la /tmp", 42, "zh")
+	got := buildPanelTitle("ok", "Bash", "ls -la /tmp", 42, "zh", false)
 	if !strings.HasPrefix(got, "✅") {
 		t.Errorf("missing emoji prefix: %q", got)
 	}
@@ -75,8 +75,47 @@ func TestBuildPanelTitle_AllParts(t *testing.T) {
 }
 
 func TestBuildPanelTitle_OmitsZeroDuration(t *testing.T) {
-	got := buildPanelTitle("running", "Read", "/etc/passwd", 0, "en")
+	got := buildPanelTitle("running", "Read", "/etc/passwd", 0, "en", false)
 	if strings.Contains(got, "0ms") {
 		t.Errorf("should omit 0 duration, got %q", got)
+	}
+}
+
+func TestBuildPanelTitle_SubagentPrefix(t *testing.T) {
+	got := buildPanelTitle("ok", "Bash", "ls", 10, "zh", true)
+	if !strings.HasPrefix(got, "🤖 ") {
+		t.Errorf("missing subagent prefix: %q", got)
+	}
+	if !strings.Contains(got, "✅") {
+		t.Errorf("missing status emoji: %q", got)
+	}
+	if !strings.Contains(got, "执行命令") {
+		t.Errorf("missing zh label: %q", got)
+	}
+}
+
+func TestBuildPanelTitle_NoSubagentPrefixWhenMainAgent(t *testing.T) {
+	got := buildPanelTitle("ok", "Bash", "ls", 10, "en", false)
+	if strings.HasPrefix(got, "🤖") {
+		t.Errorf("unexpected subagent prefix on main-agent panel: %q", got)
+	}
+}
+
+func TestIsSubagentEntryTool(t *testing.T) {
+	for _, name := range []string{"task", "Task", "TASK", "agent", "Agent", "AGENT"} {
+		if !isSubagentEntryTool(name) {
+			t.Errorf("isSubagentEntryTool(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"Bash", "Read", "", "tasklist", "subagent"} {
+		if isSubagentEntryTool(name) {
+			t.Errorf("isSubagentEntryTool(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestToolLabel_ChineseAgentAlias(t *testing.T) {
+	if got := toolLabel("Agent", "zh-CN"); got != "子任务" {
+		t.Errorf("zh Agent = %q, want 子任务", got)
 	}
 }

@@ -36,7 +36,7 @@ func toolLabel(name, lang string) string {
 		return "网络搜索"
 	case "todowrite":
 		return "任务清单"
-	case "task":
+	case "task", "agent":
 		return "子任务"
 	case "skill":
 		return "技能"
@@ -63,12 +63,18 @@ func panelStatusEmoji(status string) string {
 
 // buildPanelTitle assembles the summary line shown in the panel header:
 //
-//	{emoji} {label} · {digest} · {duration}
+//	[🤖 ]{emoji} {label} · {digest} · {duration}
 //
-// Duration is omitted when <=0.
-func buildPanelTitle(status, toolName, digest string, durationMs int, lang string) string {
+// The 🤖 prefix is drawn when isSubagent is true, meaning either the
+// tool was emitted from inside a subagent (claudecode: parent_tool_use_id
+// non-empty on the source event) or the tool is itself a subagent-entry
+// tool (see isSubagentEntryTool). Duration is omitted when <=0.
+func buildPanelTitle(status, toolName, digest string, durationMs int, lang string, isSubagent bool) string {
 	label := toolLabel(toolName, lang)
 	var b strings.Builder
+	if isSubagent {
+		b.WriteString("🤖 ")
+	}
 	b.WriteString(panelStatusEmoji(status))
 	b.WriteByte(' ')
 	b.WriteString(label)
@@ -81,6 +87,20 @@ func buildPanelTitle(status, toolName, digest string, durationMs int, lang strin
 		b.WriteString(formatDuration(durationMs))
 	}
 	return b.String()
+}
+
+// isSubagentEntryTool reports whether toolName is the name of a tool that
+// starts or represents a subagent invocation — i.e. a tool that deserves
+// the 🤖 marker even when it's called directly by the main agent.
+//
+// Matches case-insensitively:
+//   - "Agent" (claudecode's internal name for the Task tool, observed in
+//     stream-json output at /tmp/cctest/test_subagent.py)
+//   - "Task"  (Anthropic user-facing name; future-proofing in case the
+//     CLI switches)
+//   - "task"  (opencode's subagent entrypoint; lowercase in its NDJSON)
+func isSubagentEntryTool(toolName string) bool {
+	return strings.EqualFold(toolName, "task") || strings.EqualFold(toolName, "agent")
 }
 
 func formatDuration(ms int) string {

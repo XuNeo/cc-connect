@@ -20,7 +20,8 @@ func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lan
 	}
 
 	digest := toolDigest(use.Tool, use.Text)
-	title := buildPanelTitle(status, use.Tool, digest, durationFrom(res), lang)
+	isSubagent := use.ParentToolUseID != "" || isSubagentEntryTool(use.Tool)
+	title := buildPanelTitle(status, use.Tool, digest, durationFrom(res), lang, isSubagent)
 	if use.PartTotal > 0 {
 		title += fmt.Sprintf(" (%d/%d)", use.PartIdx, use.PartTotal)
 	}
