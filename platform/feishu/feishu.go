@@ -2537,8 +2537,19 @@ func isTenantAccessTokenInvalid(err error) bool {
 	if err == nil {
 		return false
 	}
+	var fe *feishuAPIError
+	if errors.As(err, &fe) {
+		switch fe.Code {
+		case 99991663, 99991664, 99991668, 2200:
+			return true
+		}
+	}
+	// Fallback for errors that don't wrap *feishuAPIError (rare paths that
+	// format only the message string).
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "99991663") || strings.Contains(msg, "invalid access token")
+	return strings.Contains(msg, "99991663") ||
+		strings.Contains(msg, "invalid access token") ||
+		strings.Contains(msg, "check app tenant fail")
 }
 
 // Transient retry constants for network-level failures.
