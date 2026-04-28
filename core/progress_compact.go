@@ -25,6 +25,16 @@ const (
 	// Bound each platform progress-card API call so a hung upstream request
 	// does not block the whole turn forever.
 	compactProgressAPITimeout = 15 * time.Second
+
+	// writerMaxConsecutiveFailures is how many back-to-back Send/Update errors
+	// tip the writer into disabled mode. Isolated transient errors (Feishu
+	// tenant cache miss, rate limit, transient 5xx) do NOT disable the writer;
+	// the next successful call resets the counter.
+	writerMaxConsecutiveFailures = 5
+
+	// writerCooldown is the idle gap after which consecutiveFailures resets
+	// even without a success. Protects against slow-drip failures.
+	writerCooldown = 60 * time.Second
 )
 
 // writerErrKind classifies a Feishu/platform error from the writer's point of
@@ -260,9 +270,13 @@ type compactProgressWriter struct {
 	handle  any
 
 	enabled    bool
-	failed     bool
+	disabled   bool
 	style      string
 	usePayload bool
+
+	// Failure accounting — replaces the binary failed flag.
+	consecutiveFailures int
+	lastFailureAt       time.Time
 
 	content    string
 	entries    []string
@@ -403,6 +417,47 @@ func normalizeProgressAgentLabel(name string) string {
 	}
 }
 
+// recordFailure increments the failure counter and, depending on kind,
+// either marks the writer disabled (permanent) or continues (transient below
+// threshold). Returns true when the writer should stay alive.
+func (w *compactProgressWriter) recordFailure(op string, err error) bool {
+	kind := classifyWriterError(err)
+	now := time.Now()
+	// Cooldown window: a quiet gap resets the counter so slow-drip errors
+	// don't silently accumulate over hours.
+	if !w.lastFailureAt.IsZero() && now.Sub(w.lastFailureAt) >= writerCooldown {
+		w.consecutiveFailures = 0
+	}
+	w.lastFailureAt = now
+	w.consecutiveFailures++
+
+	switch kind {
+	case writerErrPermanent:
+		w.disabled = true
+		slog.Warn("progress writer: permanent error, disabling",
+			"platform", w.platform.Name(), "style", w.style, "op", op, "error", err)
+		return false
+	case writerErrTransient:
+		if w.consecutiveFailures >= writerMaxConsecutiveFailures {
+			w.disabled = true
+			slog.Warn("progress writer: disabled after consecutive failures",
+				"platform", w.platform.Name(), "style", w.style, "op", op,
+				"consecutive", w.consecutiveFailures, "error", err)
+			return false
+		}
+		slog.Warn("progress writer: transient error, dropping frame",
+			"platform", w.platform.Name(), "style", w.style, "op", op,
+			"consecutive", w.consecutiveFailures, "error", err)
+		return true
+	}
+	return true
+}
+
+// recordSuccess is called after every successful API write.
+func (w *compactProgressWriter) recordSuccess() {
+	w.consecutiveFailures = 0
+}
+
 // Append appends one progress item and updates the in-place message.
 // Returns true when compact rendering handled this item; false means caller
 // should fallback to legacy per-event send.
@@ -422,7 +477,7 @@ func (w *compactProgressWriter) AppendEvent(kind ProgressCardEntryKind, text str
 
 // AppendStructured appends one structured progress event and updates the in-place message.
 func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallback string) bool {
-	if !w.enabled || w.failed {
+	if !w.enabled || w.disabled {
 		return false
 	}
 	text := strings.TrimSpace(item.Text)
@@ -472,7 +527,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 			w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
 			if w.content == "" {
 				slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
-				w.failed = true
+				w.disabled = true
 				return false
 			}
 		} else {
@@ -499,11 +554,15 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 			cancel()
 			if err != nil || handle == nil {
 				slog.Warn("progress writer: SendPreviewStart failed", "platform", w.platform.Name(), "style", w.style, "error", err, "handle_nil", handle == nil)
-				w.failed = true
+				if err == nil {
+					err = errors.New("SendPreviewStart returned nil handle")
+				}
+				w.recordFailure("SendPreviewStart", err)
 				return false
 			}
 			w.handle = handle
 			w.lastSent = w.content
+			w.recordSuccess()
 			return true
 		}
 		callCtx, cancel := w.withAPITimeout()
@@ -511,11 +570,12 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		cancel()
 		if err != nil {
 			slog.Warn("progress writer: initial Send failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-			w.failed = true
+			w.recordFailure("Send", err)
 			return false
 		}
 		w.handle = w.replyCtx
 		w.lastSent = w.content
+		w.recordSuccess()
 		return true
 	}
 
@@ -524,17 +584,18 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	cancel()
 	if err != nil {
 		slog.Warn("progress writer: UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
+		w.recordFailure("UpdateMessage", err)
 		return false
 	}
 	w.lastSent = w.content
+	w.recordSuccess()
 	return true
 }
 
 // Finalize updates card progress state (running/completed/failed) without
 // appending a new progress entry.
 func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
-	if !w.enabled || w.failed || w.style != progressStyleCard || !w.usePayload || w.handle == nil {
+	if !w.enabled || w.disabled || w.style != progressStyleCard || !w.usePayload || w.handle == nil {
 		return false
 	}
 	if state == "" {
@@ -553,10 +614,11 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	cancel()
 	if err != nil {
 		slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
+		w.recordFailure("Finalize", err)
 		return false
 	}
 	w.lastSent = w.content
+	w.recordSuccess()
 	return true
 }
 
