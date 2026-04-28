@@ -2920,7 +2920,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 				toolMsg := fmt.Sprintf(e.i18n.T(MsgTool), toolCount, event.ToolName, formattedInput)
-				useEntry := ProgressCardEntry{Kind: ProgressEntryToolUse, Text: toolInput, Tool: event.ToolName}
+				useEntry := ProgressCardEntry{Kind: ProgressEntryToolUse, Text: toolInput, Tool: event.ToolName, ParentToolUseID: event.ParentToolUseID}
 				panelTracker.onToolUse(event.ToolUseID, &useEntry, time.Now())
 				if !cp.AppendStructured(useEntry, toolMsg) {
 					for _, chunk := range SplitMessageCodeFenceAware(toolMsg, maxPlatformMessageLen) {
@@ -2941,12 +2941,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				if result != "" || event.ToolStatus != "" || event.ToolExitCode != nil || event.ToolSuccess != nil {
 					resultMsg := e.formatToolResultEventFallback(event.ToolName, result, event.ToolStatus, event.ToolExitCode, event.ToolSuccess)
 					entry := ProgressCardEntry{
-						Kind:     ProgressEntryToolResult,
-						Tool:     event.ToolName,
-						Text:     result,
-						Status:   event.ToolStatus,
-						ExitCode: event.ToolExitCode,
-						Success:  event.ToolSuccess,
+						Kind:            ProgressEntryToolResult,
+						Tool:            event.ToolName,
+						Text:            result,
+						Status:          event.ToolStatus,
+						ExitCode:        event.ToolExitCode,
+						Success:         event.ToolSuccess,
+						ParentToolUseID: event.ParentToolUseID,
 					}
 					panelTracker.onToolResult(event.ToolUseID, &entry, time.Now())
 					if !cp.AppendStructured(entry, resultMsg) {

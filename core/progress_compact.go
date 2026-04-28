@@ -100,6 +100,10 @@ type ProgressCardEntry struct {
 	Status   string                `json:"status,omitempty"`
 	ExitCode *int                  `json:"exit_code,omitempty"`
 	Success  *bool                 `json:"success,omitempty"`
+	// ParentToolUseID, when non-empty, marks this entry as originating
+	// inside a subagent spawned by the named parent Task tool_use.
+	// Feishu's renderer uses it to draw a 🤖 prefix on the panel title.
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 
 	// Panel-level metadata (new in 2026-04 collapsible card redesign).
 	// ID is the stable element_id used by Feishu collapsible_panel.
@@ -162,16 +166,17 @@ func BuildProgressCardPayloadV2(items []ProgressCardEntry, truncated bool, agent
 			kind = ProgressEntryInfo
 		}
 		cleaned = append(cleaned, ProgressCardEntry{
-			Kind:       kind,
-			Text:       text,
-			Tool:       strings.TrimSpace(item.Tool),
-			Status:     strings.TrimSpace(item.Status),
-			ExitCode:   item.ExitCode,
-			Success:    item.Success,
-			ID:         strings.TrimSpace(item.ID),
-			DurationMs: item.DurationMs,
-			PartIdx:    item.PartIdx,
-			PartTotal:  item.PartTotal,
+			Kind:            kind,
+			Text:            text,
+			Tool:            strings.TrimSpace(item.Tool),
+			Status:          strings.TrimSpace(item.Status),
+			ExitCode:        item.ExitCode,
+			Success:         item.Success,
+			ParentToolUseID: strings.TrimSpace(item.ParentToolUseID),
+			ID:              strings.TrimSpace(item.ID),
+			DurationMs:      item.DurationMs,
+			PartIdx:         item.PartIdx,
+			PartTotal:       item.PartTotal,
 		})
 	}
 	if len(cleaned) == 0 {

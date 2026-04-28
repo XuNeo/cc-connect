@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,26 @@ func TestAssignEntryIDAndDuration_OrphanResult(t *testing.T) {
 	tracker.onToolResult("missing-id", &res, time.Unix(100, 0))
 	if res.ID == "" {
 		t.Error("orphan result should still get an ID to render")
+	}
+}
+
+// BuildProgressCardPayloadV2 must preserve ParentToolUseID on every
+// entry when it copies the struct. Losing it here would erase the
+// subagent marker before the platform renderer sees it.
+func TestBuildProgressCardPayloadV2_PreservesParentToolUseID(t *testing.T) {
+	items := []ProgressCardEntry{
+		{
+			Kind:            ProgressEntryToolUse,
+			Text:            "echo sub",
+			Tool:            "Bash",
+			ParentToolUseID: "toolu_parent_123",
+		},
+	}
+	payload := BuildProgressCardPayloadV2(items, false, "claudecode", LangEnglish, ProgressCardStateRunning)
+	if payload == "" {
+		t.Fatal("empty payload")
+	}
+	if !strings.Contains(payload, "toolu_parent_123") {
+		t.Errorf("payload missing ParentToolUseID: %s", payload)
 	}
 }
