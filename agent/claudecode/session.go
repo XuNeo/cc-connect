@@ -354,6 +354,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 	if !ok {
 		return
 	}
+	parentToolUseID, _ := raw["parent_tool_use_id"].(string)
 	contentArr, ok := msg["content"].([]any)
 	if !ok {
 		return
@@ -376,7 +377,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 				cs.toolNames[toolUseID] = toolName
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
-			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary, ToolUseID: toolUseID}
+			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary, ToolUseID: toolUseID, ParentToolUseID: parentToolUseID}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -384,7 +385,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "thinking":
 			if thinking, ok := item["thinking"].(string); ok && thinking != "" {
-				evt := core.Event{Type: core.EventThinking, Content: thinking}
+				evt := core.Event{Type: core.EventThinking, Content: thinking, ParentToolUseID: parentToolUseID}
 				select {
 				case cs.events <- evt:
 				case <-cs.ctx.Done():
@@ -393,7 +394,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "text":
 			if text, ok := item["text"].(string); ok && text != "" {
-				evt := core.Event{Type: core.EventText, Content: text}
+				evt := core.Event{Type: core.EventText, Content: text, ParentToolUseID: parentToolUseID}
 				select {
 				case cs.events <- evt:
 				case <-cs.ctx.Done():
@@ -409,6 +410,7 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 	if !ok {
 		return
 	}
+	parentToolUseID, _ := raw["parent_tool_use_id"].(string)
 	contentArr, ok := msg["content"].([]any)
 	if !ok {
 		return
@@ -461,11 +463,12 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 		}
 
 		evt := core.Event{
-			Type:        core.EventToolResult,
-			ToolName:    toolName,
-			ToolUseID:   toolUseID,
-			ToolResult:  result,
-			ToolSuccess: &success,
+			Type:            core.EventToolResult,
+			ToolName:        toolName,
+			ToolUseID:       toolUseID,
+			ParentToolUseID: parentToolUseID,
+			ToolResult:      result,
+			ToolSuccess:     &success,
 		}
 		select {
 		case cs.events <- evt:

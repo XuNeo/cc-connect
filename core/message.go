@@ -193,6 +193,12 @@ type Event struct {
 	ToolInput    string         // human-readable summary of tool input
 	ToolInputRaw map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
 	ToolUseID    string         // tool_use id for pairing EventToolUse with EventToolResult
+	// ParentToolUseID, when non-empty, names the *parent* tool_use id of the
+	// tool that emitted this event — i.e. this event originated inside a
+	// subagent spawned by that parent Task tool. Empty for main-agent events.
+	// Currently populated only by the claudecode provider (stream-json
+	// protocol). Other providers leave this empty.
+	ParentToolUseID string
 	ToolResult   string         // populated for EventToolResult
 	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
 	ToolExitCode *int           // optional exit code for EventToolResult

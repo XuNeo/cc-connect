@@ -518,3 +518,79 @@ func TestHandleUser_ToolResultArrayContent(t *testing.T) {
 		t.Fatal("expected EventToolResult, got none")
 	}
 }
+
+// Subagent-emitted events carry a top-level parent_tool_use_id that
+// links them back to the parent Task tool call. The parser must
+// surface this via Event.ParentToolUseID so downstream code can mark
+// the event as originating inside a subagent.
+func TestHandleAssistant_ParentToolUseIDPropagates(t *testing.T) {
+	cs := &claudeSession{
+		events:    make(chan core.Event, 4),
+		toolNames: map[string]string{},
+		ctx:       context.Background(),
+	}
+	raw := map[string]any{
+		"type":               "assistant",
+		"parent_tool_use_id": "toolu_parent_123",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":  "tool_use",
+					"id":    "toolu_child_456",
+					"name":  "Bash",
+					"input": map[string]any{"command": "echo sub"},
+				},
+			},
+		},
+	}
+	cs.handleAssistant(raw)
+
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventToolUse {
+			t.Fatalf("evt.Type = %v, want EventToolUse", evt.Type)
+		}
+		if evt.ParentToolUseID != "toolu_parent_123" {
+			t.Errorf("ParentToolUseID = %q, want %q", evt.ParentToolUseID, "toolu_parent_123")
+		}
+		if evt.ToolUseID != "toolu_child_456" {
+			t.Errorf("ToolUseID = %q, want %q", evt.ToolUseID, "toolu_child_456")
+		}
+	default:
+		t.Fatal("expected an event, got none")
+	}
+}
+
+func TestHandleUser_ToolResultParentToolUseIDPropagates(t *testing.T) {
+	cs := &claudeSession{
+		events:    make(chan core.Event, 4),
+		toolNames: map[string]string{"toolu_child_456": "Bash"},
+		ctx:       context.Background(),
+	}
+	raw := map[string]any{
+		"type":               "user",
+		"parent_tool_use_id": "toolu_parent_123",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":        "tool_result",
+					"tool_use_id": "toolu_child_456",
+					"content":     "sub\n",
+				},
+			},
+		},
+	}
+	cs.handleUser(raw)
+
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventToolResult {
+			t.Fatalf("evt.Type = %v, want EventToolResult", evt.Type)
+		}
+		if evt.ParentToolUseID != "toolu_parent_123" {
+			t.Errorf("ParentToolUseID = %q, want %q", evt.ParentToolUseID, "toolu_parent_123")
+		}
+	default:
+		t.Fatal("expected an event, got none")
+	}
+}
