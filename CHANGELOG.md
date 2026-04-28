@@ -7,6 +7,7 @@
 - **Feishu progress card redesigned**: each tool call and thinking block is now its own `collapsible_panel`. The single running tool and the latest thinking stay expanded; failed tools stay expanded; everything else defaults collapsed.
 
 ### Added
+- Feishu panels now display a 🤖 prefix for tool calls that belong to or invoke a subagent. For claudecode, every tool emitted from inside a `Task` subagent is marked individually (uses the stream-json `parent_tool_use_id` field). For opencode, only the `task` tool entrypoint is marked because opencode's `run --format json` does not stream subagent-internal events (filtered by `run.ts:458`).
 - `update_multi: true` on progress-card config (required by Feishu for shared updatable cards).
 - Per-message update queue serialising PATCH calls at 5 QPS per card (matches Feishu limit).
 - Automatic recovery from Feishu error codes 230020 (rate limit, exponential backoff), 230031 (card expired, send fresh card), 230099/200800 (card too complex, re-render at tighter budget).
