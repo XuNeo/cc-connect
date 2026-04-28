@@ -753,7 +753,7 @@ func makePanelID(tool string, seq int) string {
 		prefix = "ws"
 	case "todowrite":
 		prefix = "td"
-	case "task":
+	case "task", "agent":
 		prefix = "tk"
 	case "skill":
 		prefix = "sk"
