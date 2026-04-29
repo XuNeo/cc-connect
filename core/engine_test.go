@@ -4833,7 +4833,6 @@ func TestBuildAskQuestionResponse(t *testing.T) {
 // Claude Code CLI uses to read answers back: it looks up answers[q.Question],
 // NOT answers[strconv.Itoa(index)]. A question whose text key is missing
 // is filtered out as unanswered, which caused the "Panel 没收到回复" bug.
-// See docs/superpowers/plans/2026-04-29-askq-answer-key-fix.md.
 func TestBuildAskQuestionResponse_MatchesClaudeCodeLookup(t *testing.T) {
 	qs := testMultiQuestions() // 2 questions: "Which database?", "Which framework?"
 	collected := map[int]string{0: "PostgreSQL", 1: "Gin"}
