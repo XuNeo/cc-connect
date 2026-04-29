@@ -2118,6 +2118,8 @@ func buildAskQuestionResponse(originalInput map[string]any, questions []UserQues
 	answers := make(map[string]any)
 	for idx, ans := range collected {
 		if idx < 0 || idx >= len(questions) {
+			slog.Warn("buildAskQuestionResponse: dropping out-of-range answer",
+				"idx", idx, "questions", len(questions))
 			continue
 		}
 		answers[questions[idx].Question] = ans
