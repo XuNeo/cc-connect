@@ -9,8 +9,9 @@ import (
 
 // buildToolPanel returns a collapsible_panel element that renders one tool
 // invocation (tool_use merged with its matching tool_result when present).
-// isLastRunning selects the only in-progress panel that stays expanded.
-func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lang string, isLastRunning bool) map[string]any {
+// Panels are collapsed by default; only failures force expansion so the user
+// can see what went wrong without hunting.
+func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lang string) map[string]any {
 	status := use.Status
 	if res != nil {
 		status = res.Status
@@ -27,10 +28,7 @@ func buildToolPanel(use core.ProgressCardEntry, res *core.ProgressCardEntry, lan
 	}
 
 	expanded := false
-	switch status {
-	case "running":
-		expanded = isLastRunning
-	case "fail", "failed", "error":
+	if status == "fail" || status == "failed" || status == "error" {
 		expanded = true
 	}
 
@@ -159,9 +157,8 @@ func runningPlaceholderText(lang string) string {
 }
 
 // buildThinkingPanel renders a reasoning/thinking block as a collapsible_panel.
-// isLatest picks the single panel (usually the most recent) that stays
-// expanded so the user can follow the in-flight reasoning.
-func buildThinkingPanel(entry core.ProgressCardEntry, lang string, isLatest bool) map[string]any {
+// Thinking panels are always collapsed; the user can open them on demand.
+func buildThinkingPanel(entry core.ProgressCardEntry, lang string) map[string]any {
 	label := "Thinking"
 	if isZhLikeProgressLang(lang) {
 		label = "思考"
@@ -192,7 +189,7 @@ func buildThinkingPanel(entry core.ProgressCardEntry, lang string, isLatest bool
 
 	return map[string]any{
 		"tag":        "collapsible_panel",
-		"expanded":   isLatest,
+		"expanded":   false,
 		"element_id": elementID,
 		"header": map[string]any{
 			"title": map[string]any{"tag": "plain_text", "content": title},

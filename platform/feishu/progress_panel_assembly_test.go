@@ -43,7 +43,7 @@ func TestBuildProgressCard_AssemblesCollapsiblePanels(t *testing.T) {
 	}
 }
 
-func TestBuildProgressCard_RunningPanelExpanded(t *testing.T) {
+func TestBuildProgressCard_RunningPanelCollapsed(t *testing.T) {
 	payload := &core.ProgressCardPayload{
 		Agent: "CC", Lang: "en", State: core.ProgressCardStateRunning,
 		Items: []core.ProgressCardEntry{
@@ -51,22 +51,38 @@ func TestBuildProgressCard_RunningPanelExpanded(t *testing.T) {
 		},
 	}
 	raw := buildProgressCardJSONFromPayload(payload)
-	if !strings.Contains(raw, `"expanded":true`) {
-		t.Errorf("the single running panel must be expanded: %s", raw)
+	if strings.Contains(raw, `"expanded":true`) {
+		t.Errorf("running panel must not auto-expand: %s", raw)
 	}
 }
 
-func TestBuildProgressCard_OnlyLastRunningExpanded(t *testing.T) {
+func TestBuildProgressCard_NoAutoExpandAcrossRunningAndThinking(t *testing.T) {
 	payload := &core.ProgressCardPayload{
 		Agent: "CC", Lang: "en", State: core.ProgressCardStateRunning,
 		Items: []core.ProgressCardEntry{
 			{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: `{"command":"a"}`, ID: "bsh_1", Status: "running"},
 			{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: `{"command":"b"}`, ID: "bsh_2", Status: "running"},
+			{Kind: core.ProgressEntryThinking, Text: "current thought", ID: "thk_1"},
 		},
 	}
 	raw := buildProgressCardJSONFromPayload(payload)
-	got := strings.Count(raw, `"expanded":true`)
-	if got != 1 {
-		t.Errorf("want exactly 1 expanded panel, got %d: %s", got, raw)
+	if got := strings.Count(raw, `"expanded":true`); got != 0 {
+		t.Errorf("no panel should auto-expand when none failed, got %d: %s", got, raw)
+	}
+}
+
+func TestBuildProgressCard_FailedToolForcesExpand(t *testing.T) {
+	bad := false
+	exit := 1
+	payload := &core.ProgressCardPayload{
+		Agent: "CC", Lang: "en", State: core.ProgressCardStateRunning,
+		Items: []core.ProgressCardEntry{
+			{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: `{"command":"false"}`, ID: "bsh_1"},
+			{Kind: core.ProgressEntryToolResult, Tool: "Bash", Text: "boom", ID: "bsh_1", Status: "fail", Success: &bad, ExitCode: &exit},
+		},
+	}
+	raw := buildProgressCardJSONFromPayload(payload)
+	if got := strings.Count(raw, `"expanded":true`); got != 1 {
+		t.Errorf("failed tool panel must stay expanded (want 1 expanded), got %d: %s", got, raw)
 	}
 }

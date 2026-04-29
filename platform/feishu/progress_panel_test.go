@@ -29,7 +29,7 @@ func TestBuildToolPanel_MergesUseAndResult(t *testing.T) {
 		DurationMs: 42,
 	}
 
-	panel := buildToolPanel(use, &res, "zh-CN", false)
+	panel := buildToolPanel(use, &res, "zh-CN")
 	b, err := json.Marshal(panel)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -65,15 +65,15 @@ func TestBuildToolPanel_MergesUseAndResult(t *testing.T) {
 	}
 }
 
-func TestBuildToolPanel_ExpandedWhenRunning(t *testing.T) {
+func TestBuildToolPanel_RunningCollapsed(t *testing.T) {
 	use := core.ProgressCardEntry{
 		Kind: core.ProgressEntryToolUse, Tool: "Bash",
 		Text: `{"command":"sleep 10"}`, ID: "bsh_2", Status: "running",
 	}
-	panel := buildToolPanel(use, nil, "en", true)
+	panel := buildToolPanel(use, nil, "en")
 	b, _ := json.Marshal(panel)
-	if !strings.Contains(string(b), `"expanded":true`) {
-		t.Errorf("last-running panel should be expanded: %s", b)
+	if !strings.Contains(string(b), `"expanded":false`) {
+		t.Errorf("running panel must stay collapsed: %s", b)
 	}
 	if !strings.Contains(string(b), "⏳") {
 		t.Errorf("running panel missing hourglass")
@@ -93,7 +93,7 @@ func TestBuildToolPanel_ExpandedOnFailure(t *testing.T) {
 		ID: "bsh_3", Status: "fail",
 		Success: &bad, ExitCode: &exit,
 	}
-	panel := buildToolPanel(use, &res, "en", false)
+	panel := buildToolPanel(use, &res, "en")
 	b, _ := json.Marshal(panel)
 	if !strings.Contains(string(b), `"expanded":true`) {
 		t.Errorf("failed panel must stay expanded: %s", b)
@@ -109,20 +109,20 @@ func TestBuildToolPanel_PartSuffixWhenSharded(t *testing.T) {
 		Text: `{"command":"cat huge"}`, ID: "bsh_4",
 		PartIdx: 2, PartTotal: 3,
 	}
-	panel := buildToolPanel(use, nil, "zh", false)
+	panel := buildToolPanel(use, nil, "zh")
 	b, _ := json.Marshal(panel)
 	if !strings.Contains(string(b), "(2/3)") {
 		t.Errorf("missing part suffix 2/3: %s", b)
 	}
 }
 
-func TestBuildThinkingPanel_CollapsedByDefault(t *testing.T) {
+func TestBuildThinkingPanel_AlwaysCollapsed(t *testing.T) {
 	entry := core.ProgressCardEntry{
 		Kind: core.ProgressEntryThinking,
 		Text: "Analyzing dependencies and whether to split into multiple PRs...",
 		ID:   "thk_7",
 	}
-	panel := buildThinkingPanel(entry, "zh-CN", false)
+	panel := buildThinkingPanel(entry, "zh-CN")
 	b, _ := json.Marshal(panel)
 	s := string(b)
 	if !strings.Contains(s, `"tag":"collapsible_panel"`) {
@@ -145,13 +145,13 @@ func TestBuildThinkingPanel_CollapsedByDefault(t *testing.T) {
 	}
 }
 
-func TestBuildThinkingPanel_ExpandedWhenLatest(t *testing.T) {
+func TestBuildThinkingPanel_LatestStillCollapsed(t *testing.T) {
 	entry := core.ProgressCardEntry{
 		Kind: core.ProgressEntryThinking, Text: "Latest thought", ID: "thk_8",
 	}
-	panel := buildThinkingPanel(entry, "en", true)
+	panel := buildThinkingPanel(entry, "en")
 	b, _ := json.Marshal(panel)
-	if !strings.Contains(string(b), `"expanded":true`) {
-		t.Error("latest thinking panel should be expanded")
+	if !strings.Contains(string(b), `"expanded":false`) {
+		t.Errorf("thinking panel must stay collapsed regardless of recency: %s", b)
 	}
 }

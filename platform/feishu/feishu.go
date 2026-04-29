@@ -3062,8 +3062,6 @@ func buildProgressCardElements(payload *core.ProgressCardPayload) (elements []ma
 	title, template, footer = progressStateMeta(payload.State, payload.Lang, agent)
 
 	paired := pairToolEntries(items)
-	lastRunningID := findLastRunningID(paired)
-	lastThinkingID := findLastThinkingID(paired)
 
 	elements = make([]map[string]any, 0, len(paired)+2)
 	if payload.Truncated {
@@ -3084,9 +3082,9 @@ func buildProgressCardElements(payload *core.ProgressCardPayload) (elements []ma
 	for _, p := range paired {
 		switch p.Use.Kind {
 		case core.ProgressEntryThinking:
-			elements = append(elements, buildThinkingPanel(p.Use, payload.Lang, p.Use.ID == lastThinkingID))
+			elements = append(elements, buildThinkingPanel(p.Use, payload.Lang))
 		case core.ProgressEntryToolUse:
-			elements = append(elements, buildToolPanel(p.Use, p.Result, payload.Lang, p.Use.ID == lastRunningID))
+			elements = append(elements, buildToolPanel(p.Use, p.Result, payload.Lang))
 		case core.ProgressEntryError:
 			elements = append(elements, renderErrorElement(p.Use, payload.Lang))
 		default:
@@ -3784,25 +3782,6 @@ func pairToolEntries(items []core.ProgressCardEntry) []pairedEntry {
 		}
 	}
 	return out
-}
-
-func findLastRunningID(paired []pairedEntry) string {
-	for i := len(paired) - 1; i >= 0; i-- {
-		p := paired[i]
-		if p.Use.Kind == core.ProgressEntryToolUse && p.Result == nil {
-			return p.Use.ID
-		}
-	}
-	return ""
-}
-
-func findLastThinkingID(paired []pairedEntry) string {
-	for i := len(paired) - 1; i >= 0; i-- {
-		if paired[i].Use.Kind == core.ProgressEntryThinking {
-			return paired[i].Use.ID
-		}
-	}
-	return ""
 }
 
 func renderErrorElement(item core.ProgressCardEntry, lang string) map[string]any {

@@ -15,7 +15,7 @@ func TestAttachFallback_PanelShowsHeadTailAndNotice(t *testing.T) {
 		Text: body, ID: "bsh_X", Status: "attach",
 	}
 	use := core.ProgressCardEntry{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: `{"command":"cat huge"}`, ID: "bsh_X"}
-	panel := buildToolPanel(use, &e, "zh-CN", false)
+	panel := buildToolPanel(use, &e, "zh-CN")
 	b, _ := json.Marshal(panel)
 	s := string(b)
 
