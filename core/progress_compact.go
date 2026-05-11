@@ -300,6 +300,10 @@ type compactProgressWriter struct {
 	truncated  bool
 	lastSent   string
 	maxEntries int
+
+	// Throttle message edits to avoid platform rate limits (e.g. Discord ~5 edits/5s).
+	minUpdateInterval time.Duration
+	lastUpdateAt      time.Time
 }
 
 func normalizeProgressStyle(style string) string {
@@ -372,6 +376,9 @@ func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, age
 		agentName:  normalizeProgressAgentLabel(agentName),
 		lang:       lang,
 		maxEntries: 150,
+	}
+	if throttler, ok := p.(ProgressUpdateThrottler); ok {
+		w.minUpdateInterval = throttler.ProgressUpdateInterval()
 	}
 	if w.style != progressStyleCompact && w.style != progressStyleCard {
 		slog.Debug("progress writer disabled: unsupported style", "platform", p.Name(), "style", w.style)
@@ -581,6 +588,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 			w.handle = handle
 			w.lastSent = w.content
 			w.recordSuccess()
+			w.lastUpdateAt = time.Now()
 			return true
 		}
 		callCtx, cancel := w.withAPITimeout()
@@ -594,6 +602,11 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		w.handle = w.replyCtx
 		w.lastSent = w.content
 		w.recordSuccess()
+		w.lastUpdateAt = time.Now()
+		return true
+	}
+
+	if w.minUpdateInterval > 0 && time.Since(w.lastUpdateAt) < w.minUpdateInterval {
 		return true
 	}
 
@@ -607,6 +620,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	}
 	w.lastSent = w.content
 	w.recordSuccess()
+	w.lastUpdateAt = time.Now()
 	return true
 }
 
