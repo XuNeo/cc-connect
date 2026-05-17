@@ -78,11 +78,131 @@ func TestDispatchMessageDropsRecalledMessageBeforeHandler(t *testing.T) {
 		"",
 		replyContext{messageID: "om_drop", sessionKey: "feishu:ou_user:ou_user"},
 		"",
+		"",
 		false,
 	)
 
 	if called {
 		t.Fatal("handler was called for a message already marked recalled")
+	}
+}
+
+// TestDispatchMessageQuoteInjection verifies that fetchQuotedMessage is called
+// only for explicit user-initiated replies (parent_id set, thread_id empty),
+// and is suppressed for thread-membership messages where Feishu auto-fills
+// parent_id to the thread root.
+func TestDispatchMessageQuoteInjection(t *testing.T) {
+	const appID = "cli_quote_probe"
+	const appSecret = "secret-quote-probe"
+	const quotedParentID = "om_parent_quoted"
+	const quotedSenderText = "I am the parent message text"
+
+	cases := []struct {
+		name         string
+		parentID     string
+		threadID     string
+		wantFetch    bool
+		wantPrefixed bool
+	}{
+		{name: "plain message, no reply, no thread", parentID: "", threadID: "", wantFetch: false, wantPrefixed: false},
+		{name: "thread root (no parent)", parentID: "", threadID: "omt_x", wantFetch: false, wantPrefixed: false},
+		{name: "thread follow-up — parent auto-set by Feishu", parentID: quotedParentID, threadID: "omt_x", wantFetch: false, wantPrefixed: false},
+		{name: "non-thread explicit reply", parentID: quotedParentID, threadID: "", wantFetch: true, wantPrefixed: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetchCalls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+					writeJSON(t, w, map[string]any{
+						"code":                0,
+						"msg":                 "success",
+						"expire":              7200,
+						"tenant_access_token": "tenant-token",
+					})
+				case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/messages/"+quotedParentID):
+					fetchCalls++
+					writeJSON(t, w, map[string]any{
+						"code": 0,
+						"msg":  "ok",
+						"data": map[string]any{
+							"items": []map[string]any{{
+								"msg_type":  "text",
+								"parent_id": "",
+								"sender":    map[string]any{"id": "ou_quoted_user", "sender_type": "user"},
+								"body":      map[string]any{"content": `{"text":"` + quotedSenderText + `"}`},
+								"mentions":  []any{},
+							}},
+						},
+					})
+				default:
+					// Resolver lookups (Contact.User.Get / Im.Chat.Get) degrade
+					// gracefully on error — return a non-success code so the
+					// resolver falls back to the raw ID without polluting the
+					// quote-injection signal we are actually testing.
+					writeJSON(t, w, map[string]any{"code": 99999, "msg": "stub"})
+				}
+			}))
+			defer srv.Close()
+
+			got := make(chan *core.Message, 1)
+			p := &Platform{
+				platformName: "feishu",
+				domain:       srv.URL,
+				appID:        appID,
+				appSecret:    appSecret,
+				client: lark.NewClient(appID, appSecret,
+					lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(srv.Client()),
+				),
+				replayClient: lark.NewClient(appID, appSecret,
+					lark.WithEnableTokenCache(false),
+					lark.WithOpenBaseUrl(srv.URL),
+					lark.WithHttpClient(srv.Client()),
+				),
+				handler: func(_ core.Platform, msg *core.Message) {
+					got <- msg
+				},
+			}
+
+			messageID := "om_under_test"
+			sessionKey := "feishu:oc_chat:ou_user"
+			rctx := replyContext{messageID: messageID, chatID: "oc_chat", sessionKey: sessionKey}
+
+			p.dispatchMessage(
+				context.Background(),
+				"text",
+				`{"text":"hello"}`,
+				nil,
+				messageID,
+				sessionKey,
+				"ou_user",
+				"oc_chat",
+				rctx,
+				tc.parentID,
+				tc.threadID,
+				tc.threadID != "",
+			)
+
+			select {
+			case msg := <-got:
+				prefixed := strings.Contains(msg.Content, quotedSenderText) ||
+					(msg.ExtraContent != "" && strings.Contains(msg.ExtraContent, quotedSenderText))
+				if prefixed != tc.wantPrefixed {
+					t.Fatalf("wantPrefixed=%v got prefixed=%v (Content=%q ExtraContent=%q)",
+						tc.wantPrefixed, prefixed, msg.Content, msg.ExtraContent)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for dispatched core.Message")
+			}
+
+			if (fetchCalls > 0) != tc.wantFetch {
+				t.Fatalf("wantFetch=%v got fetchCalls=%d", tc.wantFetch, fetchCalls)
+			}
+		})
 	}
 }
 

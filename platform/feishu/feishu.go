@@ -1028,8 +1028,9 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	isThread := stringValue(msg.RootId) != ""
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, isThread)
+	threadID := stringValue(msg.ThreadId)
+	isThread := threadID != ""
+	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, threadID, isThread)
 
 	return nil
 }
@@ -1037,7 +1038,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 // dispatchMessage handles the message content parsing, media download, and
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
-func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, isThread bool) {
+func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID, threadID string, isThread bool) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -1051,13 +1052,19 @@ func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string,
 	}
 	chatName := p.resolveChatName(chatID)
 
-	// If this message is a reply to another message, fetch the quoted content
-	// and prepend it so the agent has full context.
-	// Skip quote injection when thread_isolation is enabled and the message is
-	// inside a thread — the thread already provides conversational context, and
-	// long quoted prefixes can drown out the user's actual text (issue #764).
+	// If this message is an explicit reply to another message, fetch the quoted
+	// content and prepend it so the agent has full context.
+	//
+	// Gate on thread_id: inside a Feishu thread, the SDK auto-fills parent_id
+	// to the thread root for every message regardless of whether the user
+	// performed an explicit "引用" action (verified across 2020 thread samples
+	// from production logs — parent_id always equals root_id and never
+	// reflects a user-initiated quote). thread_id is the only field whose
+	// presence reliably distinguishes structural thread membership from a
+	// genuine reply intent. Outside threads, parent_id != "" still means a
+	// real user-initiated quote (issue #764, #767).
 	quotedPrefix := ""
-	if parentID != "" && !(p.threadIsolation && isThreadSessionKey(sessionKey)) {
+	if parentID != "" && threadID == "" {
 		quotedPrefix = p.fetchQuotedMessage(ctx, parentID)
 	}
 
