@@ -1,0 +1,43 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "No language tag fenced block:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "language": "",
+          "tag": "code_block",
+          "text": "plain text inside\nno language identifier"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "After."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

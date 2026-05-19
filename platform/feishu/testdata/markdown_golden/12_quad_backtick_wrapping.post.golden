@@ -1,0 +1,62 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Demonstrating fenced syntax with a 4-backtick wrapper (commonmark allows N\u003e=3 backticks for fence; longer fence wraps shorter literal):"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "language": "`",
+          "tag": "code_block",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "def hello():"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "    print(\"hi\")"
+        }
+      ],
+      [
+        {
+          "language": "",
+          "tag": "code_block",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "After the demo block."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

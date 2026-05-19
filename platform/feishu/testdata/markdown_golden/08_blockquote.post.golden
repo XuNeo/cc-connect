@@ -1,0 +1,44 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "\u003e Important: see "
+        },
+        {
+          "href": "https://example.com",
+          "tag": "a",
+          "text": "docs"
+        },
+        {
+          "tag": "text",
+          "text": " for "
+        },
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "full details"
+        },
+        {
+          "tag": "text",
+          "text": "."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "\u003e Second quoted line."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Use "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "cat file | grep error"
+        },
+        {
+          "tag": "text",
+          "text": " to search for errors."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "The wrapper template is "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": " "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": ""
+        },
+        {
+          "tag": "text",
+          "text": "text\\n%s\\n"
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": ""
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": " "
+        },
+        {
+          "tag": "text",
+          "text": " and then the next paragraph continues."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "This is the second paragraph that should still render normally."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "Section that should remain a heading"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "This must not be swallowed into a code block."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

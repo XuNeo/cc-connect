@@ -1,0 +1,40 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Run "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "ls -la"
+        },
+        {
+          "tag": "text",
+          "text": " to list files, or use "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "pwd"
+        },
+        {
+          "tag": "text",
+          "text": " to print path."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

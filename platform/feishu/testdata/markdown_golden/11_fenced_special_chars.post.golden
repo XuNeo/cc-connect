@@ -1,0 +1,43 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Code with special chars:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "language": "bash",
+          "tag": "code_block",
+          "text": "if [ \"$a\" -lt \"$b\" ] \u0026\u0026 [ \"$c\" -gt \"$d\" ]; then\n    echo \"a|b|c\"\nfi"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "Done."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

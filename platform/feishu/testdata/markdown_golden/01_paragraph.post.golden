@@ -1,0 +1,24 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "This is a plain text paragraph with nothing special."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "Second line of the same paragraph."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Visit "
+        },
+        {
+          "href": "https://google.com",
+          "tag": "a",
+          "text": "Google"
+        },
+        {
+          "tag": "text",
+          "text": " and "
+        },
+        {
+          "href": "https://github.com",
+          "tag": "a",
+          "text": "GitHub"
+        },
+        {
+          "tag": "text",
+          "text": " for code."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

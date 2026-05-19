@@ -1,0 +1,66 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Unordered list:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "- first item"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "- second item"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "- third item"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "Ordered list:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "1. one"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "2. two"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "3. three"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

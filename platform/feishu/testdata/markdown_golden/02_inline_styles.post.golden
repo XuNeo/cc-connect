@@ -1,0 +1,51 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Mixing "
+        },
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "bold"
+        },
+        {
+          "tag": "text",
+          "text": " with "
+        },
+        {
+          "style": [
+            "italic"
+          ],
+          "tag": "text",
+          "text": "italic"
+        },
+        {
+          "tag": "text",
+          "text": " and "
+        },
+        {
+          "style": [
+            "lineThrough"
+          ],
+          "tag": "text",
+          "text": "strikethrough"
+        },
+        {
+          "tag": "text",
+          "text": " in one line."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

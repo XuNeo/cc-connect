@@ -1,0 +1,63 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "H1 Title"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "H2 Section"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "H3 Subsection"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "Body paragraph after headings."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

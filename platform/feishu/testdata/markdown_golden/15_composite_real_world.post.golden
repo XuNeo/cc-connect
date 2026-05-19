@@ -1,0 +1,304 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "根因"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "一句话:"
+        },
+        {
+          "tag": "text",
+          "text": " "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "agent/claudecode/claudecode.go:1156"
+        },
+        {
+          "tag": "text",
+          "text": " 那行 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "json.Marshal(m)"
+        },
+        {
+          "tag": "text",
+          "text": " 把 prompt 里的真换行符序列化成了 JSON 字面 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "\\n"
+        },
+        {
+          "tag": "text",
+          "text": "(两字符)。"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "链路:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "1. "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "claudeSession.handleAssistant"
+        },
+        {
+          "tag": "text",
+          "text": "(session.go:385)收到 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "tool_use"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "2. "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "summarizeInput"
+        },
+        {
+          "tag": "text",
+          "text": "(claudecode.go:1128)的 switch 只对 Read/Edit/Write/Bash/Grep/Glob 有专门 case"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "3. 返回的单行 JSON 字符串作为 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "ToolInput"
+        },
+        {
+          "tag": "text",
+          "text": " 上送"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "4. "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "formatProgressToolInput"
+        },
+        {
+          "tag": "text",
+          "text": " 拿到这个文本,因为没有真 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "\\n"
+        },
+        {
+          "tag": "text",
+          "text": " 但 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "len \u003e 180"
+        },
+        {
+          "tag": "text",
+          "text": ",包成 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": " "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": ""
+        },
+        {
+          "tag": "text",
+          "text": "text\\n%s\\n"
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": ""
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": " "
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "5. 代码块里"
+        },
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "只有一行"
+        },
+        {
+          "tag": "text",
+          "text": ",飞书渲染就只有 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "1 {…}"
+        },
+        {
+          "tag": "text",
+          "text": ",字面 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "\\n"
+        },
+        {
+          "tag": "text",
+          "text": " 是普通文本,不会变换行"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "bold"
+          ],
+          "tag": "text",
+          "text": "验证点"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "agent/claudecode/claudecode.go:1156"
+        },
+        {
+          "tag": "text",
+          "text": " 这行 "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "b, err := json.Marshal(m)"
+        },
+        {
+          "tag": "text",
+          "text": " 就是元凶。"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

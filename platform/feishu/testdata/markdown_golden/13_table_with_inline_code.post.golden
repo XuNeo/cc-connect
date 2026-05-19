@@ -1,0 +1,132 @@
+{
+  "zh_cn": {
+    "content": [
+      [
+        {
+          "tag": "text",
+          "text": "Field reference:"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "| Field | Type | Default |"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "|-------|------|---------|"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "| "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "name"
+        },
+        {
+          "tag": "text",
+          "text": " | string | "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "\"\""
+        },
+        {
+          "tag": "text",
+          "text": " |"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "| "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "id"
+        },
+        {
+          "tag": "text",
+          "text": " | int | "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "0"
+        },
+        {
+          "tag": "text",
+          "text": " |"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "| "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "enabled"
+        },
+        {
+          "tag": "text",
+          "text": " | bool | "
+        },
+        {
+          "style": [
+            "code"
+          ],
+          "tag": "text",
+          "text": "false"
+        },
+        {
+          "tag": "text",
+          "text": " |"
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": "End of table."
+        }
+      ],
+      [
+        {
+          "tag": "text",
+          "text": ""
+        }
+      ]
+    ]
+  }
+}

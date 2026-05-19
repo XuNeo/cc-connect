@@ -2482,19 +2482,83 @@ func buildPostMdJSON(content string) string {
 	return string(b)
 }
 
-// preprocessFeishuMarkdown ensures code fences have a newline before them,
-// which prevents rendering issues in Feishu card markdown.
-// Tables, headings, blockquotes, etc. are rendered natively by the card markdown element.
+// preprocessFeishuMarkdown protects against streaming output that emits a
+// fence opener without a leading newline (e.g. "text```go\ncode\n```"),
+// which Feishu would render as an inline code span instead of a code block.
+// The fix injects a newline before such mid-paragraph triple-backticks.
+//
+// A naive byte scan misclassifies triple-backticks that appear inside an
+// inline code span (` ```literal``` `) or inside an existing fenced code
+// block, shattering valid markdown. To avoid that, the scan tracks code-span
+// and fenced-block state as it walks the input.
 func preprocessFeishuMarkdown(md string) string {
-	// Ensure ``` has a newline before it (unless at start of text)
 	var b strings.Builder
 	b.Grow(len(md) + 32)
-	for i := 0; i < len(md); i++ {
-		if i > 0 && md[i] == '`' && i+2 < len(md) && md[i+1] == '`' && md[i+2] == '`' && md[i-1] != '\n' {
-			b.WriteByte('\n')
+
+	n := len(md)
+	inCodeSpan := false
+	codeSpanLen := 0
+	inFenceBlock := false
+	fenceLen := 0
+	atLineStart := true
+
+	for i := 0; i < n; {
+		c := md[i]
+
+		if c == '\n' {
+			b.WriteByte(c)
+			atLineStart = true
+			i++
+			continue
 		}
-		b.WriteByte(md[i])
+
+		if c != '`' {
+			if c != ' ' && c != '\t' {
+				atLineStart = false
+			}
+			b.WriteByte(c)
+			i++
+			continue
+		}
+
+		j := i
+		for j < n && md[j] == '`' {
+			j++
+		}
+		runLen := j - i
+
+		switch {
+		case inFenceBlock:
+			if atLineStart && runLen >= fenceLen {
+				k := j
+				for k < n && (md[k] == ' ' || md[k] == '\t') {
+					k++
+				}
+				if k == n || md[k] == '\n' {
+					inFenceBlock = false
+				}
+			}
+		case inCodeSpan:
+			if runLen == codeSpanLen {
+				inCodeSpan = false
+			}
+		case atLineStart && runLen >= 3:
+			inFenceBlock = true
+			fenceLen = runLen
+		case runLen >= 3:
+			b.WriteByte('\n')
+			inFenceBlock = true
+			fenceLen = runLen
+		default:
+			inCodeSpan = true
+			codeSpanLen = runLen
+		}
+
+		b.WriteString(md[i:j])
+		i = j
+		atLineStart = false
 	}
+
 	return b.String()
 }
 
