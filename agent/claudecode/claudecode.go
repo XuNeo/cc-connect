@@ -1151,6 +1151,24 @@ func summarizeInput(tool string, input any) string {
 		if p, ok := m["glob_pattern"].(string); ok {
 			return p
 		}
+	case "Task", "Agent":
+		desc, _ := m["description"].(string)
+		prompt, _ := m["prompt"].(string)
+		subagentType, _ := m["subagent_type"].(string)
+		var sb strings.Builder
+		if subagentType != "" {
+			sb.WriteString("[")
+			sb.WriteString(subagentType)
+			sb.WriteString("] ")
+		}
+		sb.WriteString(desc)
+		if prompt != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(prompt)
+		}
+		if s := sb.String(); strings.TrimSpace(s) != "" {
+			return s
+		}
 	}
 
 	b, err := json.Marshal(m)
