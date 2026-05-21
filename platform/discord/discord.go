@@ -22,7 +22,7 @@ func init() {
 	core.RegisterPlatform("discord", New)
 }
 
-const maxDiscordLen = 2000
+const maxDiscordLen = 1900
 
 type replyContext struct {
 	channelID string
@@ -47,9 +47,9 @@ type progressPlatform struct {
 type Platform struct {
 	token                      string
 	allowFrom                  string
-	guildID                    string // optional: per-guild registration (instant) vs global (up to 1h propagation)
+	guildID                    string   // optional: per-guild registration (instant) vs global (up to 1h propagation)
 	progressStyle              string
-	groupReplyAll              bool
+	groupReplyAllGuilds        []string // guild IDs where groupReplyAll is active; "*" = all guilds
 	shareSessionInChannel      bool
 	threadIsolation            bool
 	respondToAtEveryoneAndHere bool
@@ -75,7 +75,16 @@ func New(opts map[string]any) (core.Platform, error) {
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom("discord", allowFrom)
 	guildID, _ := opts["guild_id"].(string)
-	groupReplyAll, _ := opts["group_reply_all"].(bool)
+	var groupReplyAllGuilds []string
+	if guilds, _ := opts["group_reply_all_guilds"].(string); guilds != "" {
+		for _, g := range strings.Split(guilds, ",") {
+			if g = strings.TrimSpace(g); g != "" {
+				groupReplyAllGuilds = append(groupReplyAllGuilds, g)
+			}
+		}
+	} else if all, _ := opts["group_reply_all"].(bool); all {
+		groupReplyAllGuilds = []string{"*"}
+	}
 	shareSessionInChannel, _ := opts["share_session_in_channel"].(bool)
 	threadIsolation, _ := opts["thread_isolation"].(bool)
 	respondToAtEveryoneAndHere, _ := opts["respond_to_at_everyone_and_here"].(bool)
@@ -109,7 +118,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:                  allowFrom,
 		guildID:                    guildID,
 		progressStyle:              progressStyle,
-		groupReplyAll:              groupReplyAll,
+		groupReplyAllGuilds:        groupReplyAllGuilds,
 		shareSessionInChannel:      shareSessionInChannel,
 		readyCh:                    make(chan struct{}),
 		threadIsolation:            threadIsolation,
@@ -161,6 +170,15 @@ func (p *progressPlatform) ProgressStyle() string {
 
 func (p *progressPlatform) SupportsProgressCardPayload() bool {
 	return p.ProgressStyle() == "card"
+}
+
+func (p *Platform) isGroupReplyAllGuild(guildID string) bool {
+	for _, g := range p.groupReplyAllGuilds {
+		if g == "*" || g == guildID {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Platform) makeSessionKey(channelID string, userID string) string {
@@ -592,7 +610,7 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 					sessionKeyForGate = buildThreadSessionKey(m.ChannelID)
 				}
 			}
-			if p.shouldDropGuildMessage(m.ChannelID, sessionKeyForGate, botMentioned, m.MentionEveryone) {
+			if p.shouldDropGuildMessage(m.GuildID, m.ChannelID, sessionKeyForGate, botMentioned, m.MentionEveryone) {
 				slog.Debug("discord: ignoring guild message without bot mention", "channel", m.ChannelID)
 				return
 			}
@@ -626,19 +644,25 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 
 		images, files, audio := classifyAttachments(m.Attachments, downloadURL)
 
-		if m.Content == "" && len(images) == 0 && len(files) == 0 && audio == nil {
+		if m.Content == "" && len(images) == 0 && len(files) == 0 && audio == nil && m.ReferencedMessage == nil {
 			return
+		}
+
+		// Prepend the replied-to message's content and images so the agent has context.
+		if m.ReferencedMessage != nil {
+			m.Content, images = applyReferencedMessage(m.ReferencedMessage, m.Content, images, downloadURL)
 		}
 
 		msg := &core.Message{
 			SessionKey: sessionKey, ChannelKey: channelKey, Platform: "discord",
+			ChannelID: m.ChannelID,
 			MessageID: m.ID,
 			UserID:    m.Author.ID, UserName: m.Author.Username,
-			ChatName:  p.resolveChannelName(m.ChannelID),
 			ChatID:    m.ChannelID,
 			IsThread:  rctx.threadID != "",
 			Content:   m.Content, Images: images, Files: files, Audio: audio, ReplyCtx: rctx,
 		}
+		msg.ChatName, _ = p.ResolveChannelName(m.ChannelID)
 		p.dispatchMessage(msg)
 	})
 
@@ -730,11 +754,12 @@ func (p *Platform) handleInteraction(s *discordgo.Session, i *discordgo.Interact
 	msg := &core.Message{
 		SessionKey: sessionKey, ChannelKey: channelKey, Platform: "discord",
 		MessageID: i.ID,
+		ChannelID: i.ChannelID,
 		UserID:    userID, UserName: userName,
-		ChatName:  p.resolveChannelName(channelID),
 		ChatID:    channelID,
 		Content:   cmdText, ReplyCtx: rctx,
 	}
+	msg.ChatName, _ = p.ResolveChannelName(channelID)
 	p.dispatchMessage(msg)
 }
 
@@ -804,6 +829,7 @@ func (p *Platform) handleComponentInteraction(s *discordgo.Session, i *discordgo
 	if i.Message != nil {
 		rc.messageID = i.Message.ID
 	}
+	chatName, _ := p.ResolveChannelName(channelID)
 	p.dispatchMessage(&core.Message{
 		SessionKey: sessionKey,
 		ChannelKey: channelKey,
@@ -811,9 +837,9 @@ func (p *Platform) handleComponentInteraction(s *discordgo.Session, i *discordgo
 		MessageID:  i.ID,
 		UserID:     userID,
 		UserName:   userName,
-		ChatName:   p.resolveChannelName(channelID),
 		ChatID:     channelID,
 		Content:    command,
+		ChatName:   chatName,
 		ReplyCtx:   rc,
 	})
 }
@@ -1188,30 +1214,22 @@ func (p *Platform) StartTyping(ctx context.Context, rctx any) (stop func()) {
 	return func() { close(done) }
 }
 
-// ResolveChannelName implements core.ChannelNameResolver.
 func (p *Platform) ResolveChannelName(channelID string) (string, error) {
-	name := p.resolveChannelName(channelID)
-	if name == channelID {
-		return "", fmt.Errorf("discord: channel name not found for %s", channelID)
-	}
-	return name, nil
-}
-
-func (p *Platform) resolveChannelName(channelID string) string {
 	if cached, ok := p.channelNameCache.Load(channelID); ok {
-		return cached.(string)
+		return cached.(string), nil
 	}
 	ch, err := p.session.Channel(channelID)
 	if err != nil {
 		slog.Debug("discord: resolve channel name failed", "channel", channelID, "error", err)
-		return channelID
+		return channelID, err
 	}
 	name := ch.Name
+	slog.Debug("discord: resolve channel name", "channel", channelID, "name", ch.Name)
 	if name == "" {
-		return channelID
+		return channelID, nil
 	}
 	p.channelNameCache.Store(channelID, name)
-	return name
+	return name, nil
 }
 
 func (p *Platform) Stop() error {
@@ -1244,9 +1262,9 @@ func stripEveryoneHere(text string) string {
 
 // shouldDropGuildMessage decides whether a guild message must be dropped because
 // the bot was not @-mentioned. It consults per-chat/per-session overrides first,
-// then falls back to groupReplyAll.
-func (p *Platform) shouldDropGuildMessage(channelID, sessionKey string, botMentioned, everyoneMentioned bool) bool {
-	requireMention := !p.groupReplyAll
+// then falls back to per-guild groupReplyAll configuration.
+func (p *Platform) shouldDropGuildMessage(guildID, channelID, sessionKey string, botMentioned, everyoneMentioned bool) bool {
+	requireMention := !p.isGroupReplyAllGuild(guildID)
 	if p.settings != nil {
 		if v := p.settings.GetChatSetting(channelID, sessionKey, core.SettingRequireMention); v != nil {
 			if b, ok := v.(bool); ok {
@@ -1406,4 +1424,29 @@ func downloadURL(u string) ([]byte, error) {
 		return nil, fmt.Errorf("download %s: status %d", u, resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxDownloadBytes+1))
+}
+
+// applyReferencedMessage prepends the replied-to message's author and content
+// to content and prepends any images from the referenced message's attachments.
+// Image attachments (width > 0) are downloaded via download and prepended so the
+// agent sees them before the current message's own images.
+func applyReferencedMessage(ref *discordgo.Message, content string, images []core.ImageAttachment, download func(string) ([]byte, error)) (string, []core.ImageAttachment) {
+	author := ""
+	if ref.Author != nil {
+		author = ref.Author.Username
+	}
+	content = "[replying to " + author + ": " + ref.Content + "]\n" + content
+	for _, att := range ref.Attachments {
+		if att.Width > 0 && att.Height > 0 {
+			data, err := download(att.URL)
+			if err != nil {
+				slog.Error("discord: download referenced attachment failed", "url", att.URL, "error", err)
+				continue
+			}
+			images = append([]core.ImageAttachment{{
+				MimeType: att.ContentType, Data: data, FileName: att.Filename,
+			}}, images...)
+		}
+	}
+	return content, images
 }
