@@ -238,6 +238,9 @@ if ($task.State -ne 'Running') { Start-ScheduledTask -TaskName %s }
 	return nil
 }
 
+// CheckLinger is a no-op on Windows (always returns false).
+func CheckLinger() (enabled bool, user string) { return false, "" }
+
 func deleteWindowsTask() error {
 	out, err := runPowerShell(fmt.Sprintf(`
 $task = Get-ScheduledTask -TaskName %s -ErrorAction SilentlyContinue
