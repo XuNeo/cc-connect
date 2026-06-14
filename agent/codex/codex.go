@@ -16,8 +16,51 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
-func init() {
-	core.RegisterAgent("codex", New)
+// profile captures the identity/behavior differences between the upstream
+// OpenAI Codex CLI and ByteDance's internal `traecli` fork. Both speak the
+// identical `exec --json` event protocol, so they share the entire session
+// and event-parsing code; only the values in this struct differ.
+type profile struct {
+	name                  string // "codex" | "traecli"
+	defaultBin            string // "codex" | "traecli"
+	displayName           string // "Codex" | "TRAE CLI"
+	defaultHome           string // resolved default home dir (codex: empty, traecli: <home>/.trae/cli)
+	supportsVariant       bool   // false for codex, true for traecli
+	modelListViaAppServer bool   // false for codex, true for traecli
+}
+
+// codexProfile preserves the existing upstream Codex behavior byte-for-byte:
+// defaultHome stays empty so an unset codex_home is resolved later via
+// CODEX_HOME / ~/.codex exactly as before.
+var codexProfile = profile{
+	name:                  "codex",
+	defaultBin:            "codex",
+	displayName:           "Codex",
+	defaultHome:           "",
+	supportsVariant:       false,
+	modelListViaAppServer: false,
+}
+
+// traecliProfile drives the ByteDance traecli fork: different binary, a
+// `~/.trae/cli` data home, model backend variant support, and a dynamic
+// model catalog sourced from the app-server / cache.
+var traecliProfile = profile{
+	name:                  "traecli",
+	defaultBin:            "traecli",
+	displayName:           "TRAE CLI",
+	defaultHome:           traecliDefaultHome(),
+	supportsVariant:       true,
+	modelListViaAppServer: true,
+}
+
+// traecliDefaultHome returns the default traecli data home (`<home>/.trae/cli`).
+// Returns "" when the user home dir cannot be resolved.
+func traecliDefaultHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".trae", "cli")
 }
 
 // Agent drives OpenAI Codex CLI using `codex exec --json`.
@@ -30,6 +73,7 @@ func init() {
 type Agent struct {
 	workDir         string
 	model           string
+	variant         string // traecli model backend variant: "" | "standard" | "max"
 	reasoningEffort string
 	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
 	backend         string // "exec" | "app_server"
@@ -40,10 +84,20 @@ type Agent struct {
 	providers       []core.ProviderConfig
 	activeIdx       int // -1 = no provider set
 	sessionEnv      []string
+	prof            profile // identity/behavior profile (codex | traecli)
 	mu              sync.RWMutex
 }
 
 func New(opts map[string]any) (core.Agent, error) {
+	return newWithProfile(opts, codexProfile)
+}
+
+// NewTraeCLI constructs the agent using the traecli profile.
+func NewTraeCLI(opts map[string]any) (core.Agent, error) {
+	return newWithProfile(opts, traecliProfile)
+}
+
+func newWithProfile(opts map[string]any, prof profile) (core.Agent, error) {
 	workDir, _ := opts["work_dir"].(string)
 	if workDir == "" {
 		workDir = "."
@@ -64,7 +118,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	// cli_path allows overriding the binary, e.g. "omx" or "omx --flag val"
-	cliBin := "codex"
+	cliBin := prof.defaultBin
 	var cliExtraArgs []string
 	if cliPath, _ := opts["cli_path"].(string); strings.TrimSpace(cliPath) != "" {
 		parts := strings.Fields(cliPath)
@@ -78,16 +132,35 @@ func New(opts map[string]any) (core.Agent, error) {
 		return nil, fmt.Errorf("codex: %q CLI not found in PATH, install with: npm install -g @openai/codex", cliBin)
 	}
 
+	codexHome = strings.TrimSpace(codexHome)
+	// For traecli, default the data home to <home>/.trae/cli when unset.
+	// Codex keeps its existing behavior: an empty codex_home is resolved later
+	// via CODEX_HOME / ~/.codex, so we must not populate it here.
+	if codexHome == "" && prof.defaultHome != "" {
+		codexHome = prof.defaultHome
+	}
+
+	model, variant := splitModelVariant(model, prof.supportsVariant)
+	// An explicit variant opt (e.g. from WorkspaceAgentOptions recreation, where
+	// model is already the bare slug) takes precedence over the parsed suffix.
+	if prof.supportsVariant {
+		if v, _ := opts["variant"].(string); strings.TrimSpace(v) != "" {
+			variant = strings.TrimSpace(v)
+		}
+	}
+
 	return &Agent{
 		workDir:         workDir,
 		model:           model,
+		variant:         variant,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
 		mode:            mode,
 		backend:         backend,
 		appServerURL:    appServerURL,
-		codexHome:       strings.TrimSpace(codexHome),
+		codexHome:       codexHome,
 		cliBin:          cliBin,
 		cliExtraArgs:    cliExtraArgs,
+		prof:            prof,
 		activeIdx:       -1,
 	}, nil
 }
@@ -131,7 +204,22 @@ func normalizeReasoningEffort(raw string) string {
 	}
 }
 
-func (a *Agent) Name() string { return "codex" }
+func (a *Agent) Name() string { return a.prof.name }
+
+// CLIBinaryName reports the effective CLI binary for doctor checks
+// (satisfies core.AgentDoctorInfo).
+func (a *Agent) CLIBinaryName() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.cliBin != "" {
+		return a.cliBin
+	}
+	return a.prof.defaultBin
+}
+
+// CLIDisplayName reports the human-readable agent label for doctor checks
+// (satisfies core.AgentDoctorInfo).
+func (a *Agent) CLIDisplayName() string { return a.prof.displayName }
 
 func (a *Agent) SetWorkDir(dir string) {
 	a.mu.Lock()
@@ -149,14 +237,47 @@ func (a *Agent) GetWorkDir() string {
 func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.prof.supportsVariant {
+		slug, variant := splitModelVariant(model, true)
+		a.model = slug
+		a.variant = variant
+		slog.Info("codex: model changed", "model", slug, "variant", variant)
+		return
+	}
 	a.model = model
 	slog.Info("codex: model changed", "model", model)
 }
 
 func (a *Agent) GetModel() string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	model := core.GetProviderModel(a.providers, a.activeIdx, a.model)
+	if a.prof.supportsVariant && a.variant == "max" && model != "" {
+		return model + "/max"
+	}
+	return model
+}
+
+// splitModelVariant leniently parses a trailing variant marker from a model
+// string when variants are supported. It accepts `<slug>/max`, `<slug>__max`,
+// and `<slug> (max)` (note the space). Returns the bare slug and the variant
+// ("max" or "standard"). When supportsVariant is false the input is returned
+// verbatim with an empty variant, so codex model names pass through unchanged.
+func splitModelVariant(model string, supportsVariant bool) (slug, variant string) {
+	if !supportsVariant {
+		return model, ""
+	}
+	trimmed := strings.TrimSpace(model)
+	switch {
+	case strings.HasSuffix(trimmed, "/max"):
+		return strings.TrimSpace(strings.TrimSuffix(trimmed, "/max")), "max"
+	case strings.HasSuffix(trimmed, "__max"):
+		return strings.TrimSpace(strings.TrimSuffix(trimmed, "__max")), "max"
+	case strings.HasSuffix(trimmed, " (max)"):
+		return strings.TrimSpace(strings.TrimSuffix(trimmed, " (max)")), "max"
+	default:
+		return trimmed, "standard"
+	}
 }
 
 func (a *Agent) SetReasoningEffort(effort string) {
@@ -185,6 +306,9 @@ func (a *Agent) configuredModels() []core.ModelOption {
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	if models := a.configuredModels(); len(models) > 0 {
 		return models
+	}
+	if a.prof.modelListViaAppServer {
+		return a.availableTraeCLIModels(ctx)
 	}
 	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
 		return models
@@ -333,6 +457,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	a.mu.Lock()
 	mode := a.mode
 	model := a.model
+	variant := a.variant
+	supportsVariant := a.prof.supportsVariant
 	reasoningEffort := a.reasoningEffort
 	backend := a.backend
 	appServerURL := a.appServerURL
@@ -368,7 +494,15 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
 	}
 
-	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
+	cs, err := newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName)
+	if err != nil {
+		return nil, err
+	}
+	cs.supportsVariant = supportsVariant
+	if supportsVariant {
+		cs.variant = variant
+	}
+	return cs, nil
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -423,6 +557,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	}
 	if a.model != "" {
 		opts["model"] = a.model
+	}
+	if a.variant != "" {
+		opts["variant"] = a.variant
 	}
 	if a.reasoningEffort != "" {
 		opts["reasoning_effort"] = a.reasoningEffort

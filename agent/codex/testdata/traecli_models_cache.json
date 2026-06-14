@@ -1,0 +1,48 @@
+{
+  "fetched_at": "2026-06-14T00:00:00Z",
+  "provider_mode": "replaces_bundled_catalog",
+  "models": [
+    {
+      "slug": "GPT-5.5",
+      "display_name": "GPT-5.5",
+      "visibility": "list",
+      "supported_in_api": true,
+      "business_metadata": {
+        "variants": {
+          "max_key": "gpt-5.5-max"
+        }
+      }
+    },
+    {
+      "slug": "openrouter-3o",
+      "display_name": "OpenRouter 3o",
+      "visibility": "list",
+      "supported_in_api": true,
+      "business_metadata": {
+        "variants": {
+          "max_key": "openrouter-3o-max"
+        }
+      }
+    },
+    {
+      "slug": "glm-5",
+      "display_name": "GLM-5",
+      "visibility": "list",
+      "supported_in_api": true,
+      "business_metadata": {
+        "variants": {
+          "max_key": ""
+        }
+      }
+    },
+    {
+      "slug": "gpt-5.2",
+      "display_name": "GPT-5.2",
+      "visibility": "list",
+      "supported_in_api": true,
+      "business_metadata": {
+        "variants": {}
+      }
+    }
+  ]
+}

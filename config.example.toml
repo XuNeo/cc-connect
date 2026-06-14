@@ -1381,6 +1381,44 @@ app_secret = "your-feishu-app-secret"
 # [projects.platforms.options]
 # token = "your-telegram-bot-token"
 
+# =============================================================================
+# Project 4b: Using TRAE CLI agent / 项目 4b：使用 TRAE CLI agent (uncomment to enable / 取消注释以启用)
+# =============================================================================
+# TRAE CLI (ByteDance's internal Codex fork) speaks the identical
+# `exec --json` protocol as Codex but uses its own binary (`traecli`),
+# data home (~/.trae/cli), and a dynamic model catalog with standard/max
+# backend variants.
+# TRAE CLI（字节内部 Codex 分支）与 Codex 使用相同的 `exec --json` 协议，
+# 但二进制名为 `traecli`，数据目录为 ~/.trae/cli，并支持 standard/max 变体。
+#
+# Use type = "traecli" (no cli_path hack needed).
+# 使用 type = "traecli"（无需 cli_path 变通）。
+
+# [[projects]]
+# name = "my-traecli-project"
+#
+# [projects.agent]
+# type = "traecli"
+#
+# [projects.agent.options]
+# work_dir = "/path/to/project"
+# mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
+#
+# Optional: override the traecli data home (default ~/.trae/cli)
+# 可选：覆盖 traecli 数据目录（默认 ~/.trae/cli）
+# codex_home = "/home/you/.trae/cli"
+#
+# Optional: specify a model. Append "/max" to select the max backend variant
+# (only models that actually have a max variant honor it).
+# 可选：指定模型。追加 "/max" 选择 max 变体（仅对真正具备 max 变体的模型生效）。
+# model = "gpt-5.5/max"
+#
+# [[projects.platforms]]
+# type = "telegram"
+#
+# [projects.platforms.options]
+# token = "your-telegram-bot-token"
+
 # QQ (via NapCat / OneBot v11) (uncomment to enable / 取消注释以启用)
 # Requires a OneBot v11 implementation running alongside your QQ client:
 # 需要一个 OneBot v11 实现配合 QQ 客户端运行：

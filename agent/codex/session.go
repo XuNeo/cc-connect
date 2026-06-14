@@ -24,24 +24,26 @@ import (
 // codexSession manages a multi-turn Codex conversation.
 // First Send() uses `codex exec`, subsequent ones use `codex exec resume <threadID>`.
 type codexSession struct {
-	workDir       string
-	model         string
-	effort        string
-	mode          string
-	baseURL       string // provider base URL; passed as -c openai_base_url=<url>
-	modelProvider string // Codex model_provider name; passed as -c model_provider=<name>
-	cliBin        string   // CLI binary, default "codex"
-	cliExtraArgs  []string // extra args from cli_path, prepended before exec args
-	extraEnv      []string
-	events        chan core.Event
-	threadID  atomic.Value // stores string — Codex thread_id
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	alive     atomic.Bool
-	closeOnce sync.Once
-	cmdMu     sync.Mutex
-	cmds      map[*exec.Cmd]struct{}
+	workDir         string
+	model           string
+	effort          string
+	mode            string
+	baseURL         string   // provider base URL; passed as -c openai_base_url=<url>
+	modelProvider   string   // Codex model_provider name; passed as -c model_provider=<name>
+	variant         string   // traecli model backend variant ("max" enables -c model_backend_variant)
+	supportsVariant bool     // true for traecli; gates the variant flag (codex never sets it)
+	cliBin          string   // CLI binary, default "codex"
+	cliExtraArgs    []string // extra args from cli_path, prepended before exec args
+	extraEnv        []string
+	events          chan core.Event
+	threadID        atomic.Value // stores string — Codex thread_id
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	alive           atomic.Bool
+	closeOnce       sync.Once
+	cmdMu           sync.Mutex
+	cmds            map[*exec.Cmd]struct{}
 
 	pendingMsgs []string // buffered agent_message texts awaiting classification
 
@@ -206,6 +208,9 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 	}
 	if cs.effort != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", cs.effort))
+	}
+	if cs.supportsVariant && cs.variant == "max" {
+		args = append(args, "-c", fmt.Sprintf("model_backend_variant=%q", "max"))
 	}
 
 	if isResume {
@@ -598,8 +603,11 @@ func codexToolSuccess(status string, exitCode *int) bool {
 	return s == "completed" || s == "success" || s == "succeeded" || s == "ok"
 }
 
-func loadCodexRuntimeConfig(ctx context.Context, workDir string, extraEnv []string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, "codex", "app-server")
+func loadCodexRuntimeConfig(ctx context.Context, cliBin, workDir string, extraEnv []string) (string, string, error) {
+	if strings.TrimSpace(cliBin) == "" {
+		cliBin = "codex"
+	}
+	cmd := exec.CommandContext(ctx, cliBin, "app-server")
 	cmd.Dir = workDir
 	prepareCmdForKill(cmd)
 	if len(extraEnv) > 0 {
@@ -781,7 +789,7 @@ func (cs *codexSession) runtimeConfig() (string, string) {
 	ctx, cancel := context.WithTimeout(cs.ctx, codexRuntimeConfigTimeout)
 	defer cancel()
 
-	model, effort, err := loadCodexRuntimeConfig(ctx, cs.workDir, cs.extraEnv)
+	model, effort, err := loadCodexRuntimeConfig(ctx, cs.cliBin, cs.workDir, cs.extraEnv)
 	if err == nil {
 		cs.runtimeCfgModel = model
 		cs.runtimeCfgEffort = effort

@@ -1,0 +1,36 @@
+{
+  "result": {
+    "data": [
+      {
+        "id": "gpt-5.5",
+        "businessMetadata": {
+          "variants": {
+            "max_key": "gpt-5.5-max"
+          }
+        }
+      },
+      {
+        "id": "openrouter-3o",
+        "businessMetadata": {
+          "variants": {
+            "max_key": "openrouter-3o-max"
+          }
+        }
+      },
+      {
+        "id": "glm-5",
+        "businessMetadata": {
+          "variants": {
+            "max_key": ""
+          }
+        }
+      },
+      {
+        "id": "gpt-5.2",
+        "businessMetadata": {
+          "variants": {}
+        }
+      }
+    ]
+  }
+}
